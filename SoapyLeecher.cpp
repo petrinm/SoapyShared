@@ -48,7 +48,7 @@ public:
 		if ((shm_fd = shm_open(shm.c_str(), O_RDONLY, 0644)) < 0)
 			throw runtime_error(strerror(errno));
 
-		// Get size
+		// Get size of the allocated memory
 		struct stat shm_stat;
 		if(fstat(shm_fd, &shm_stat) < 0)
 			throw runtime_error(strerror(errno));
@@ -74,19 +74,18 @@ public:
 		else if (string(info->format) == "CF64")
 			bytes_per_sample = 2*8;
 
-		cout << "   Format: " << info->format << endl;
-		cout << "   Center frequency: " << info->center_frequency << endl;
-		cout << "   Sample rate: " << info->sample_rate << endl;
-		cout << "   Ring buffer size: " << hex << bufsize_bytes << dec << endl;
-		cout << "   Bytes per sample: " << bytes_per_sample << endl;
+		cerr << "   Format: " << info->format << endl;
+		cerr << "   Center frequency: " << info->center_frequency << endl;
+		cerr << "   Sample rate: " << info->sample_rate << endl;
+		cerr << "   Ring buffer size: " << hex << bufsize_bytes << dec << endl;
+		cerr << "   Bytes per sample: " << bytes_per_sample << endl;
 
 		info_rev = info->rev;
 
-
-
 		// IIR for decimation
-		iir = iirfilt_crcf_create_lowpass(6, 0.03);
-		decim = 1;
+		iir = iirfilt_crcf_create_lowpass(7, 0.05);
+		decimation_factor = 1;
+		decimation_counter = 0;
 
 		// Mixer NCO
 		mixer = nco_crcf_create(LIQUID_VCO);
@@ -157,6 +156,7 @@ public:
 		cerr << "activateStream" << endl;
 		if (stream == RX_STREAM) {
 			prevp = info->end;
+			decimation_counter = 0;
 			return 0;
 		}
 		return -1;
@@ -173,30 +173,37 @@ public:
 		return -1;
 	}
 
-
 	int mix(void* const dst, const void* src, size_t numElems) {
 
-		// TODO: Works only with CF32
+		// TODO: Decimation works only with CF32
+
+		size_t new_samples = 0;
 
 		// Pointer casting...
 		const liquid_float_complex* input = (const liquid_float_complex*)src;
 		liquid_float_complex* const output = (liquid_float_complex* const)dst;
 
-		liquid_float_complex tmp;
+		liquid_float_complex tmp, tmpp;
 
 		for (size_t k = 0; k < numElems; k++) {
 			// Convert
-			nco_crcf_mix_down(mixer, input[k], &tmp);
+			nco_crcf_mix_up(mixer, input[k], &tmp);
 			nco_crcf_step(mixer);
 
 			// Filter
-			iirfilt_crcf_execute(iir, tmp, &output[k]);
+			iirfilt_crcf_execute(iir, tmp, &tmpp);
+			decimation_counter++;
 
 			// Decimate
-			// TODO!
+			if (decimation_counter >= decimation_factor) {
+				output[new_samples++] = tmpp;
+				decimation_counter = 0;
+			}
+
+
 		}
 
-		return 0;
+		return new_samples;
 	}
 
 	int readStream(SoapySDR::Stream *stream, void *const *buffs, const size_t numElems, int &flags, long long &timeNs, const long timeoutUs=100000) {
@@ -212,52 +219,42 @@ public:
 
 			// Try to read stuff
 			long timeout = timeoutUs;
-			size_t ne;
-
+			size_t samples_available, samples_produced;
 
 			while (timeout > 0) {
 
 				size_t nextp = info->end;
 
-				if(nextp > prevp) {
-
-					ne = (nextp - prevp) / bytes_per_sample;
-					if (ne > numElems) ne = numElems;
-
-					//
-					if (1)
-						mix(*buffs, shm_buf + prevp, ne);
-					else
-						memcpy(*buffs, shm_buf + prevp, ne * bytes_per_sample);
-
-					prevp += ne * bytes_per_sample;
-					return ne;
-
-				} else if(nextp < prevp) {
-					// Buffer has wrapped around!
-
-					ne = (bufsize_bytes - prevp) / bytes_per_sample;
-					if (ne > numElems) ne = numElems;
-
-					if (1)
-						mix(*buffs, shm_buf + prevp, ne);
-					else
-						memcpy(*buffs, shm_buf + prevp, ne * bytes_per_sample);
-
-					prevp += ne * bytes_per_sample;
-					if (prevp == bufsize_bytes)
-						prevp = 0; // continue reading in next iteration
-
-					assert(prevp <= bufsize_bytes);
-					return ne;
-
-				} else {
-
+				if (nextp == prevp) {
 					// no new data so wait for sometime...
 					usleep(10000);
 					timeout -= 10000;
+					continue;
 				}
 
+				if(nextp < prevp) // Has the buffer wrapped around?
+					samples_available = (bufsize_bytes - prevp) / bytes_per_sample;
+				else
+					samples_available = (nextp - prevp) / bytes_per_sample;
+
+				// Limit number of used samples
+				if (samples_available > numElems * decimation_factor)
+					samples_available = numElems / decimation_factor;
+
+				// Memcopy or decimate
+				if (decimation_factor == 1) {
+					memcpy(*buffs, shm_buf + prevp, samples_available * bytes_per_sample);
+					samples_produced = samples_available;
+				}
+				else
+					samples_produced = mix(*buffs, shm_buf + prevp, samples_available);
+
+				// Move prevp-pointer
+				prevp += samples_available * bytes_per_sample;
+				if (prevp == bufsize_bytes)
+					prevp = 0;
+
+				return samples_produced;
 			}
 			return SOAPY_SDR_TIMEOUT;
 
@@ -283,7 +280,7 @@ public:
 
 
 	void setFrequency(const int direction, const size_t channel, const double frequency, const SoapySDR::Kwargs &args=SoapySDR::Kwargs()) {
-		cerr << "setFrequency(" << direction << "," << channel << "," << frequency << ")" << endl;
+		cerr << "setFrequency(" << direction << "sample_rate," << channel << "," << frequency << ")" << endl;
 
 		center_frequency = frequency;
 		if (info) {
@@ -310,10 +307,10 @@ public:
 				throw runtime_error("Interpolation not supported!");
 
 			// Check decimation factor
-			double decim = info->sample_rate / sample_rate;
-			cerr << "Decimation factor: " << decim << endl;
+			decimation_factor = info->sample_rate / sample_rate;
+			cerr << "Decimation factor: " << (info->sample_rate / sample_rate) << endl;
 
-			if (decim != int(decim))
+			if (info->sample_rate / sample_rate != decimation_factor)
 				throw runtime_error("Non-integer decimation factor!");
 		}
 	}
@@ -324,11 +321,11 @@ public:
 
 	/*SoapySDR::RangeList getSampleRateRange(const int direction, const size_t channel) const {
 		assert(slave); return slave->getSampleRateRange(direction, channel);
-	}*/
+	}
 
 	void setBandwidth(const int direction, const size_t channel, const double bw) {
 		iir = iirfilt_crcf_create_lowpass(6, bw / info->sample_rate);
-	}
+	}*/
 
 	double getBandwidth(const int direction, const size_t channel) const {
 		return sample_rate;
@@ -360,7 +357,7 @@ private:
 
 	double center_frequency, tx_frequency;
 	double sample_rate;
-	int decim;
+	size_t decimation_factor, decimation_counter;
 
 	// DSP blocks
 	nco_crcf mixer;
