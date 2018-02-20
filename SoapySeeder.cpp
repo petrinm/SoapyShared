@@ -1,21 +1,15 @@
 #include <SoapySDR/Device.hpp>
 #include <SoapySDR/Registry.hpp>
-#include "SoapyShared.hpp"
 
-#include <unistd.h>
-#include <assert.h>
-#include <stdint.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <fcntl.h>
+#include "SharedRingBuffer.hpp"
 
-#include <cerrno>
-#include <cstring>
-#include <clocale>
 #include <complex>
 #include <stdexcept>
-#include <iostream>
+#include <iostream> // cerr
 #include <string>
+#include <algorithm> // min
+#include <memory> // unique_ptr
+#include <cstring> // memcpy
 
 
 using namespace std;
@@ -29,13 +23,8 @@ class SoapySeeder: public SoapySDR::Device
 public:
 	// Implement constructor with device specific arguments...
 	SoapySeeder(const SoapySDR::Kwargs &args) :
-		shm("/soapy"), shm_fd(-1),
-		shm_buf(NULL), info(NULL),
-		bufsize_bytes(0x400000),
-		bytes_per_sample(2),
-		slave(NULL), rx(NULL), tx(NULL)
+		shm("/soapy"), rx(NULL), tx(NULL), bufsize(0x4000000) // 64 MSamples
 	{
-		assert(args.size() > 0);
 
 		// Parse slave arguments
 		SoapySDR::Kwargs slaveArgs;
@@ -52,33 +41,67 @@ public:
 		if (i != args.end())
 			shm = i->second;
 
+
 		// Try to parse buffer_size
 		i = args.find("buffer_size");
 		if (i != args.end())
-			bufsize_bytes = stol(i->second);
+			bufsize = stol(i->second);
 
-		bufsize_bytes &= ~0xF; // Ensure alignment in every case
+		bufsize &= ~0xF; // Ensure nice alignment in every case
+
 
 		// Open slave device
-		slave = SoapySDR::Device::make(slaveArgs);
-		if (slave == NULL)
+		slave = unique_ptr<SoapySDR::Device>(SoapySDR::Device::make(slaveArgs));
+		if (slave.get() == NULL)
 			throw runtime_error("No slave device found!");
-	}
 
 
-	/**/
-	virtual ~SoapySeeder() {
-		if (shm_fd > 0) {
-			cerr << "closing" << endl;
-			unlink(shm.c_str());
-			close(shm_fd);
+		// Create TX buffer also so leechers can attact to it
+		if (args.find("tx") != args.end()) {
+
+			string tx_format = "CF32";
+			size_t tx_buffer_size = 0x1000000; // 16 MSamples
+
+			tx_buffer = unique_ptr<SharedRingBuffer>(new SharedRingBuffer(shm + "_tx", tx_format, tx_buffer_size));
+			tx = slave->setupStream(SOAPY_SDR_TX, tx_format /*, channels, args*/);
+
 		}
-		delete slave;
+
+
 	}
+
 
 	void checkWriting() {
 
+		if(!tx_buffer)
+			return;
 
+
+		if (tx_buffer->settingsChanged()) {
+
+			slave->setFrequency(SOAPY_SDR_TX, 0, tx_buffer->getCenterFrequency());
+			slave->setSampleRate(SOAPY_SDR_TX, 0, tx_buffer->getSampleRate());
+		}
+
+		if (tx_buffer->getSamplesAvailable()) {
+
+			// TODO!
+			slave->activateStream(tx, /* flags = */ 0, /* timeNs = */ 0, /*numElems = */ 0);
+			slave->deactivateStream(tx, /* flags = */ 0, /* timeNs = */ 0);
+
+			void* shmbuffs[] = {
+				rx_buffer->getReadPointer<void>()
+			};
+
+			size_t readElems = tx_buffer->read(16 * 1024);
+
+			// writeStream(SoapySDR::Stream *stream, const void *const *buffs, const size_t numElems, int &flags, const long long timeNs=0, const long timeoutUs=100000)
+
+			// Read the real stream
+			int flags;
+			if (slave->writeStream(tx, shmbuffs, readElems, flags) < 0)
+				throw runtime_error("Write failed!");
+		}
 	}
 
 
@@ -87,11 +110,11 @@ public:
 	}
 
 	string getHardwareKey(void) const {
-		assert(slave); return slave->getHardwareKey();
+		return slave->getHardwareKey();
 	}
 
 	SoapySDR::Kwargs getHardwareInfo(void) const {
-		assert(slave); return slave->getHardwareInfo();
+		return slave->getHardwareInfo();
 	}
 
 	size_t getNumChannels(const int dir) const {
@@ -103,15 +126,15 @@ public:
 	}
 
 	SoapySDR::ArgInfoList getSettingInfo(void) const {
-		assert(slave); return slave->getSettingInfo();
+		return slave->getSettingInfo();
 	}
 
 	std::vector<std::string> getStreamFormats(const int direction, const size_t channel) const {
-		assert(slave); return slave->getStreamFormats(direction, channel);
+		return slave->getStreamFormats(direction, channel);
 	}
 
 	string getNativeStreamFormat(const int direction, const size_t channel, double &fullScale) const {
-		assert(slave); return slave->getNativeStreamFormat(direction, channel, fullScale);
+		return slave->getNativeStreamFormat(direction, channel, fullScale);
 	}
 
 
@@ -120,127 +143,97 @@ public:
 		const SoapySDR::Kwargs &args=SoapySDR::Kwargs())
 	{
 		cerr << "setupStream(" << direction << ", " << format << ")" << endl;
-		assert(slave);
 
 		if (direction == SOAPY_SDR_RX) {
 
-			//
-			if (format[0] != 'C')
-				throw runtime_error("Non complex format");
+			rx_buffer = unique_ptr<SharedRingBuffer>(new SharedRingBuffer(shm, format, bufsize));
+			rx_buffer->sync();
+			rx_buffer->setCenterFrequency(slave->getFrequency(SOAPY_SDR_RX, 0));
+			rx_buffer->setSampleRate(slave->getSampleRate(SOAPY_SDR_RX, 0));
 
-			if (format == "CS8")
-				bytes_per_sample = 2;
-			else if (format == "CS16")
-				bytes_per_sample = 2*2;
-			else if (format == "CF32")
-				bytes_per_sample = 2*4;
-			else if (format == "CF64")
-				bytes_per_sample = 2*8;
-
-			// last sizeof(size_t) bytes of shm are an index to the byte to be written next
-			size_t shm_size = bufsize_bytes + sizeof(struct CircularBuffer);
-
-			if ((shm_fd = shm_open(shm.c_str(), O_CREAT | O_RDWR, 0644)) < 0)
-				throw runtime_error(strerror(errno));
-
-			if (ftruncate(shm_fd, shm_size) < 0)
-				throw runtime_error(strerror(errno));
-
-			if ((shm_buf = mmap(0, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0)) == MAP_FAILED)
-				throw runtime_error(strerror(errno));
-
-			info = (struct CircularBuffer*)((void*)shm_buf + bufsize_bytes);
-
-			// Init metadata struct
-			info->end = 0;
-			info->rev = 1;
-			strncpy(info->format, format.c_str(), 5);
-			info->center_frequency = slave->getFrequency(direction, 0);;
-			info->sample_rate = slave->getSampleRate(direction, 0);
 
 			rx = slave->setupStream(direction, format, channels, args);
 			return rx;
 		}
 		else if (direction == SOAPY_SDR_TX) {
-
-			// Open UDP socket to
-			throw runtime_error("Not implemented yet!");
+			throw runtime_error("Not possible!");
 		}
 
 		return NULL;
 	}
 
 	void closeStream (SoapySDR::Stream *stream) {
-		assert(slave); slave->closeStream(stream);
+		slave->closeStream(stream);
 		cerr << "closeStream" << endl;
-		//if (stream == rx) {
-			unlink(shm.c_str());
-			close(shm_fd);
-		//}
+		if (stream == rx) {
+			rx_buffer.release();
+		}
 	}
 
 
-
 	int activateStream(SoapySDR::Stream *stream, const int flags=0, const long long timeNs=0, const size_t numElems=0) {
-		assert(slave);
-
-
-		cerr << "activateStream" << endl;
+		cerr << "activateStream(" << flags << ", " << timeNs << ", " << numElems << ")" << endl;
 		return slave->activateStream(stream, flags, timeNs, numElems);
 	}
 
 	int deactivateStream(SoapySDR::Stream *stream, const int flags=0, const long long timeNs=0) {
-		assert(slave);
+
 		int r = slave->deactivateStream(stream, flags, timeNs);
 
-		// unmap shared memory?
-		info = NULL;
-
-/*
-		// Close the shared memory buffer
-		if (shm_unlink(shm.c_str()) < 0) {
-			cerr << "ftruncate failed: " << strerror(errno) << endl;
-			if (r == 0) return -1;
+		if (stream == rx) {
+			rx_buffer.release();
 		}
-*/
+
 		return r;
 	}
 
 	int readStream(SoapySDR::Stream *stream, void *const *buffs, const size_t numElems, int &flags, long long &timeNs, const long timeoutUs=100000) {
 
-		assert(slave);
-		assert(stream == rx);
-
 		checkWriting();
 
-		// Limit number of samples to avoid overflow
-		size_t samples_left = (bufsize_bytes - info->end) / bytes_per_sample;
-		size_t nnumElems = (numElems > samples_left) ? samples_left : numElems;
-		//cerr << "readStream: " << numElems << ", " <<  samples_left << endl;
+		if (stream == rx) {
 
-		// buffs
-		void* shmbuffs[] = {
-			shm_buf + info->end
-		};
+			// Limit number of samples to avoid overflow
+			size_t readElems = min(rx_buffer->getSamplesLeft(),  numElems);
 
-		//cerr << "   0x" << hex << (size_t)*shmbuffs << dec << "  " << nnumElems << endl;
+			// Suboptimal buffer size? Adjust buffer size?
+			//if (readElems < numElems)
+			//	cerr << "§";
 
-		// Read the real stream
-		int ret = slave->readStream(stream, shmbuffs, nnumElems, flags, timeNs, timeoutUs);
-		if (ret <= 0)
+
+			void* shmbuffs[] = {
+				rx_buffer->getWritePointer<void>()
+			};
+
+			// Read the real stream
+			int ret = slave->readStream(stream, shmbuffs, readElems, flags, timeNs, timeoutUs);
+			if (ret <= 0)
+				return ret;
+
+#if 0
+			cerr << hex << *shmbuffs << dec << endl;
+			cerr << "numElems = " << numElems << "; readElems = " << readElems << endl;
+			cerr << "ret = " << ret << endl;
+#endif
+
+			rx_buffer->moveEnd(ret); // Move the end!
+
+			//cerr << endl;
+			// Read more?
+			if (0 && readElems < numElems) {
+				//
+			}
+
+
+			// Copy data also to caller's buffer
+			memcpy(*buffs, *shmbuffs, rx_buffer->getDatasize() * ret);
+
+			//if (flags)  UHD gives
+			//	cerr << "Flags!" << flags << endl;
 			return ret;
+		}
 
-		// Move the end!
-		size_t pos = info->end + bytes_per_sample * ret;
-		if (pos >= bufsize_bytes) pos = 0;
-		info->end = pos;
-
-		// Copy data also to caller's buffer
-		memcpy(*buffs, *shmbuffs, bytes_per_sample * ret);
-
-		if (flags)
-			cerr << "Flags!" << flags << endl;
-		return ret;
+		return -1;
 	}
 
 	int writeStream(SoapySDR::Stream *stream, const void *const *buffs, const size_t numElems, int &flags, const long long timeNs=0, const long timeoutUs=100000) {
@@ -256,200 +249,182 @@ public:
 		return 0;
 	}
 
-	int getDirectAccessBufferAddrs(SoapySDR::Stream *stream, const size_t handle, void **buffs) {
-		(void) stream; (void) handle; (void)buffs;
-		cerr << "getDirectAccessBufferAddrs" << endl;
-		//(*buffs) =
-	}
-
 	int acquireReadBuffer(SoapySDR::Stream *stream, size_t &handle, const void **buffs, int &flags, long long &timeNs, const long timeoutUs=100000) {
 		cerr << "acquireReadBuffer" << endl;
-		assert(slave); return slave->acquireReadBuffer(stream, handle, buffs, flags, timeNs, timeoutUs);
+		return slave->acquireReadBuffer(stream, handle, buffs, flags, timeNs, timeoutUs);
 	}
 
 	void releaseReadBuffer(SoapySDR::Stream *stream, const size_t handle) {
-		assert(slave); slave->releaseReadBuffer(stream, handle);
+		slave->releaseReadBuffer(stream, handle);
 	}
 
 	int acquireWriteBuffer(SoapySDR::Stream *stream, size_t &handle, void **buffs, const long timeoutUs=100000) {
-		assert(slave); return slave->acquireWriteBuffer(stream, handle, buffs, timeoutUs);
+		return slave->acquireWriteBuffer(stream, handle, buffs, timeoutUs);
 	}
 
 	void releaseWriteBuffer(SoapySDR::Stream *stream, const size_t handle, const size_t numElems, int &flags, const long long timeNs=0) {
-		assert(slave); return slave->releaseWriteBuffer(stream, handle, numElems, flags, timeNs);
+		return slave->releaseWriteBuffer(stream, handle, numElems, flags, timeNs);
 	}
-
-
 
 
 	std::vector<std::string> listAntennas(const int direction, const size_t channel) const {
-		assert(slave); return slave->listAntennas(direction, channel);
+		return slave->listAntennas(direction, channel);
 	}
 
 	void setAntenna (const int direction, const size_t channel, const std::string &name) {
-		assert(slave); slave->setAntenna(direction, channel, name);
+		slave->setAntenna(direction, channel, name);
 	}
 
 	std::string getAntenna (const int direction, const size_t channel) const  {
-		assert(slave); return slave->getAntenna(direction, channel);
+		return slave->getAntenna(direction, channel);
 	}
 
 	bool hasDCOffsetMode (const int direction, const size_t channel) const  {
-		assert(slave); return slave->hasDCOffsetMode(direction, channel);
+		return slave->hasDCOffsetMode(direction, channel);
 	}
 
 	void setDCOffsetMode (const int direction, const size_t channel, const bool automatic) {
-		assert(slave); return slave->setDCOffsetMode(direction, channel, automatic);
+		return slave->setDCOffsetMode(direction, channel, automatic);
 	}
 
 	bool getDCOffsetMode (const int direction, const size_t channel) const  {
-		assert(slave); return slave->getDCOffsetMode(direction, channel);
+		return slave->getDCOffsetMode(direction, channel);
 	}
 
 	bool hasDCOffset (const int direction, const size_t channel) const  {
-		assert(slave); return slave->hasDCOffset(direction, channel);
+		return slave->hasDCOffset(direction, channel);
 	}
 
 	void setDCOffset (const int direction, const size_t channel, const std::complex<double> &offset) {
-		assert(slave); return slave->setDCOffset(direction, channel, offset);
+		return slave->setDCOffset(direction, channel, offset);
 	}
 
 	std::complex<double> getDCOffset (const int direction, const size_t channel) const {
-		assert(slave); return slave->getDCOffset(direction, channel);
+		return slave->getDCOffset(direction, channel);
 	}
 
 	bool hasIQBalance (const int direction, const size_t channel) const  {
-		assert(slave); return slave->hasIQBalance(direction, channel);
+		return slave->hasIQBalance(direction, channel);
 	}
 
 	void setIQBalance (const int direction, const size_t channel, const std::complex<double> &balance) {
-		assert(slave); return slave->setIQBalance(direction, channel, balance);
+		return slave->setIQBalance(direction, channel, balance);
 	}
 
 	std::complex<double> getIQBalance (const int direction, const size_t channel) const  {
-		assert(slave); return slave->getIQBalance(direction, channel);
+		return slave->getIQBalance(direction, channel);
 	}
 
 	bool hasFrequencyCorrection (const int direction, const size_t channel) const  {
-		assert(slave); return slave->hasFrequencyCorrection(direction, channel);
+		return slave->hasFrequencyCorrection(direction, channel);
 	}
 
 	void setFrequencyCorrection (const int direction, const size_t channel, const double value) {
-		assert(slave); return slave->setFrequencyCorrection(direction, channel, value);
+		return slave->setFrequencyCorrection(direction, channel, value);
 	}
 
 	double getFrequencyCorrection (const int direction, const size_t channel) const  {
-		assert(slave); return slave->getFrequencyCorrection(direction, channel);
+		return slave->getFrequencyCorrection(direction, channel);
 	}
 
 	std::vector<std::string> listGains (const int direction, const size_t channel) const  {
-		assert(slave); return slave->listGains(direction, channel);
+		return slave->listGains(direction, channel);
 	}
 
 	bool hasGainMode (const int direction, const size_t channel) const  {
-		assert(slave); return slave->hasGainMode(direction, channel);
+		return slave->hasGainMode(direction, channel);
 	}
 
 	void setGainMode (const int direction, const size_t channel, const bool automatic) {
-		assert(slave); return slave->setGainMode(direction, channel, automatic);
+		return slave->setGainMode(direction, channel, automatic);
 	}
 
 	bool getGainMode (const int direction, const size_t channel) const  {
-		assert(slave); return slave->getGainMode(direction, channel);
+		return slave->getGainMode(direction, channel);
 	}
 
 	void setGain (const int direction, const size_t channel, const double value) {
-		assert(slave); slave->setGain(direction, channel, value);
+		slave->setGain(direction, channel, value);
 	}
 
 	void setGain (const int direction, const size_t channel, const std::string &name, const double value) {
-		assert(slave); slave->setGain(direction, channel, name, value);
+		slave->setGain(direction, channel, name, value);
 	}
 
 	double getGain (const int direction, const size_t channel) const  {
-		assert(slave); return slave->getGain(direction, channel);
+		return slave->getGain(direction, channel);
 	}
 
 	double getGain (const int direction, const size_t channel, const std::string &name) const {
-		assert(slave); return slave->getGain(direction, channel, name);
+		return slave->getGain(direction, channel, name);
 	}
 
 	SoapySDR::Range getGainRange (const int direction, const size_t channel) const  {
-		assert(slave); return slave->getGainRange(direction, channel);
+		return slave->getGainRange(direction, channel);
 	}
 
 	SoapySDR::Range getGainRange (const int direction, const size_t channel, const std::string &name) const {
-		assert(slave); return slave->getGainRange(direction, channel, name);
+		return slave->getGainRange(direction, channel, name);
 	}
 
 	void setFrequency (const int direction, const size_t channel, const double frequency, const SoapySDR::Kwargs &args=SoapySDR::Kwargs()) {
 		cerr << "setFrequency(" << direction << "," << channel << "," << frequency << ")" << endl;
-		assert(slave); slave->setFrequency(direction, channel, frequency, args);
-		if (info && direction == SOAPY_SDR_RX) {
-			info->center_frequency = frequency;
-			info->rev++;
-		}
+		slave->setFrequency(direction, channel, frequency, args);
+		if (direction == SOAPY_SDR_RX && rx_buffer)
+			rx_buffer->setCenterFrequency(frequency);
 	}
 
 	double getFrequency (const int direction, const size_t channel) const  {
-		assert(slave); return slave->getFrequency(direction, channel);
+		return slave->getFrequency(direction, channel);
 	}
 
 	double getFrequency (const int direction, const size_t channel, const std::string &name) const  {
-		assert(slave); return slave->getFrequency(direction, channel, name);
+		return slave->getFrequency(direction, channel, name);
 	}
 
 	void setSampleRate(const int direction, const size_t channel, const double rate) {
-		assert(slave); slave->setSampleRate(direction, channel, rate);
-		if (info) {
-			info->sample_rate = rate;
-			info->rev++;
-		}
+		slave->setSampleRate(direction, channel, rate);
+		if (direction == SOAPY_SDR_RX && rx_buffer)
+			rx_buffer->setSampleRate(rate);
 	}
 
 	double getSampleRate(const int direction, const size_t channel) const {
-		assert(slave); return slave->getSampleRate(direction, channel);
+		return slave->getSampleRate(direction, channel);
 	}
 
 	std::vector<double> listSampleRates (const int direction, const size_t channel) const {
-		assert(slave); return slave->listSampleRates(direction, channel);
+		return slave->listSampleRates(direction, channel);
 	}
 
 	SoapySDR::RangeList getSampleRateRange (const int direction, const size_t channel) const {
-		assert(slave); return slave->getSampleRateRange(direction, channel);
+		return slave->getSampleRateRange(direction, channel);
 	}
 
 	void setBandwidth(const int direction, const size_t channel, const double bw) {
 		cerr << "SetBandwidth(" << direction << "," << channel << "," << bw << ")" << endl;
-		assert(slave); slave->setBandwidth(direction, channel, bw);
+		slave->setBandwidth(direction, channel, bw);
 	}
 
 	double getBandwidth(const int direction, const size_t channel) const {
-		assert(slave); return slave->getBandwidth(direction, channel);
+		return slave->getBandwidth(direction, channel);
 	}
 
 	std::vector<double> listBandwidths(const int direction, const size_t channel) const {
-		assert(slave); return slave->listBandwidths(direction, channel);
+		return slave->listBandwidths(direction, channel);
 	}
 	SoapySDR::RangeList getBandwidthRange(const int direction, const size_t channel) const {
-		assert(slave); return slave->getBandwidthRange(direction, channel);
+		return slave->getBandwidthRange(direction, channel);
 	}
 
 private:
 	string shm;
 
-	// SHM variables
-	int shm_fd;
-	void* shm_buf;
-	struct CircularBuffer* info;
+	unique_ptr<SharedRingBuffer> rx_buffer, tx_buffer;
+	unique_ptr<SoapySDR::Device> slave;
+	SoapySDR::Stream* rx, *tx; // Slave device stream handles
 
-	// Location at the ring buffer
-	size_t bufsize_bytes;
-	size_t bytes_per_sample;
+	size_t bufsize;
 
-
-	SoapySDR::Device* slave;
-	SoapySDR::Stream* rx, *tx;
 };
 
 /***********************************************************************

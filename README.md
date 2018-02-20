@@ -12,14 +12,14 @@ So, how should I use it? For example when you want to use your SDR from multiple
 Just like any other C++ software nowadays:
 
 ```
-git clone git@github.com:petrinm/SoapyShared.git
-cd SoapyShared
-mkdir build && cd build
-make
+$ git clone git@github.com:petrinm/SoapyShared.git
+$ cd SoapyShared
+$ mkdir build && cd build
+$ make
 
-sudo make install
+$ sudo make install
 or
-ln -s libSoapyShared.so /usr/lib/x86_64-linux-gnu/SoapySDR/modules0.6
+$ ln -s libSoapyShared.so /usr/lib/x86_64-linux-gnu/SoapySDR/modules0.6
 ```
 
 
@@ -46,6 +46,9 @@ $ rx_sdr -d driver=seeder,seeder:driver=hackrf -f 100M -s 4M -b 16384 -F CF32 - 
 
 After the master process has been created leecher device can be found from the device list.
 
+**Note:** rx_sdr is not the best tool for this because it doesn't support CS16 input format! Decimating work atm only with CF32!
+So..., this is just for demonstration purposes :P
+
 ```
 $ SoapySDRUtil --find
 ######################################################
@@ -56,5 +59,5 @@ Found device 1
   driver = leecher
   shm = /soapy
 
-$ rx_sdr -d device=leecher -f 101.1M -s 4M -b 16384 -F CF32 - > /dev/null
+$ rx_sdr -d device=leecher -f 100M -s 4M -b 16384 -F CF32 - > /dev/null
 ```

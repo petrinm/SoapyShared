@@ -21,7 +21,7 @@ set(CMAKE_BUILD_TYPE ${CMAKE_BUILD_TYPE} CACHE STRING "")
 #set(SOAPY_SHARED_INCLUDE_DIRS ...)
 set (SOAPY_SHARED_LIBRARIES rt liquid) # For Shared Memory Stuff
 set (CMAKE_CXX_STANDARD 14)
-set (CMAKE_CXX_FLAGS "-Wno-pointer-arith") # Silence pointer arithmetic warnings 
+set (CMAKE_CXX_FLAGS "-Wno-pointer-arith -Wno-unused-parameter") # Silence pointer arithmetic warnings
 
 
 ########################################################################
@@ -37,6 +37,6 @@ endif ()
 
 SOAPY_SDR_MODULE_UTIL(
     TARGET SoapyShared
-    SOURCES SoapySeeder.cpp SoapyLeecher.cpp
+    SOURCES SoapySeeder.cpp SoapyLeecher.cpp SharedRingBuffer.cpp
     LIBRARIES ${SOAPY_SHARED_LIBRARIES}
 )
