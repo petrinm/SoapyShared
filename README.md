@@ -5,7 +5,11 @@ One "master" process attaches to physical device via SoapySeeder which forwards 
 
 So, how should I use it? For example when you want to use your SDR from multiple processes and the software itself doesn't support it. In this case you can open the device for example with GQRX via seeder driver. GQRX will show the whole band to you and bigger picture of what is happening. After this you can start developing a modem software using GNURadio tools and attach to the RX stream without loosing the waterfall on GQRX. If your SDR supports full duplex you can even transmit using the leecher device (TODO).
 
-*This driver is still under development so random crashes and memory leaks are part of feature list!*
+
+**This driver is still under development so random crashes and memory leaks are part of feature list!**
+
+**The code is not the most generic implementation and ATM created to fit my requirements**
+
 
 ## Installation
 

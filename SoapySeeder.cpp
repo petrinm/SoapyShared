@@ -14,7 +14,6 @@
 
 using namespace std;
 
-
 /***********************************************************************
  * Device interface
  **********************************************************************/
@@ -23,7 +22,8 @@ class SoapySeeder: public SoapySDR::Device
 public:
 	// Implement constructor with device specific arguments...
 	SoapySeeder(const SoapySDR::Kwargs &args) :
-		shm("/soapy"), rx(NULL), tx(NULL), bufsize(0x4000000) // 64 MSamples
+		shm("/soapy"), rx(NULL), tx(NULL), bufsize(0x4000000), // 64 MSamples
+		tx_activated(0)
 	{
 
 		// Parse slave arguments
@@ -55,7 +55,6 @@ public:
 		if (slave.get() == NULL)
 			throw runtime_error("No slave device found!");
 
-
 		// Create TX buffer also so leechers can attact to it
 		if (args.find("tx") != args.end()) {
 
@@ -63,8 +62,10 @@ public:
 			size_t tx_buffer_size = 0x1000000; // 16 MSamples
 
 			tx_buffer = unique_ptr<SharedRingBuffer>(new SharedRingBuffer(shm + "_tx", tx_format, tx_buffer_size));
-			tx = slave->setupStream(SOAPY_SDR_TX, tx_format /*, channels, args*/);
 
+			// Setup the tx stream ready on the slave devices
+			//std::vector<size_t> channels;
+			tx = slave->setupStream(SOAPY_SDR_TX, tx_format /*, channels, args*/);
 		}
 
 
@@ -77,30 +78,51 @@ public:
 			return;
 
 
+		// Update transmission settings
 		if (tx_buffer->settingsChanged()) {
-
+			cerr << "New TX settings!" << endl;
 			slave->setFrequency(SOAPY_SDR_TX, 0, tx_buffer->getCenterFrequency());
 			slave->setSampleRate(SOAPY_SDR_TX, 0, tx_buffer->getSampleRate());
 		}
 
 		if (tx_buffer->getSamplesAvailable()) {
 
-			// TODO!
-			slave->activateStream(tx, /* flags = */ 0, /* timeNs = */ 0, /*numElems = */ 0);
-			slave->deactivateStream(tx, /* flags = */ 0, /* timeNs = */ 0);
+			// Activate TX stream if needed
+			if (tx_activated == 0) {
+				cerr << "Activating TX!" << endl;
+				slave->activateStream(tx, /* flags = */ 0, /* timeNs = */ 0, /*numElems = */ 0);
+			}
+
+			tx_activated = 1;
 
 			void* shmbuffs[] = {
-				rx_buffer->getReadPointer<void>()
+				tx_buffer->getReadPointer<void>()
 			};
 
 			size_t readElems = tx_buffer->read(16 * 1024);
 
-			// writeStream(SoapySDR::Stream *stream, const void *const *buffs, const size_t numElems, int &flags, const long long timeNs=0, const long timeoutUs=100000)
-
 			// Read the real stream
 			int flags;
-			if (slave->writeStream(tx, shmbuffs, readElems, flags) < 0)
+			if (slave->writeStream(tx, shmbuffs, readElems, flags /*, const long long timeNs=0, const long timeoutUs=100000*/) < 0)
 				throw runtime_error("Write failed!");
+
+		}
+		else if (tx_activated > 0) {
+
+			//
+			size_t channelMask = 0;
+			int flags = 0;
+			long long timeNs = 0;
+
+			// Check if TX-buffer underflow has occured
+			if (slave->readStreamStatus(tx, channelMask, flags, timeNs) == SOAPY_SDR_UNDERFLOW)
+				tx_activated--;
+
+			if (tx_activated == 0) {
+				cerr << "Deactivating TX!" << endl;
+				slave->deactivateStream(tx, /* flags = */ 0, /* timeNs = */ 0);
+			}
+
 		}
 	}
 
@@ -147,11 +169,12 @@ public:
 		if (direction == SOAPY_SDR_RX) {
 
 			rx_buffer = unique_ptr<SharedRingBuffer>(new SharedRingBuffer(shm, format, bufsize));
+
 			rx_buffer->sync();
 			rx_buffer->setCenterFrequency(slave->getFrequency(SOAPY_SDR_RX, 0));
 			rx_buffer->setSampleRate(slave->getSampleRate(SOAPY_SDR_RX, 0));
 
-
+			// Setup the slace device
 			rx = slave->setupStream(direction, format, channels, args);
 			return rx;
 		}
@@ -181,7 +204,7 @@ public:
 		int r = slave->deactivateStream(stream, flags, timeNs);
 
 		if (stream == rx) {
-			rx_buffer.release();
+			rx_buffer.release(); // Delete buffer?
 		}
 
 		return r;
@@ -191,7 +214,8 @@ public:
 
 		checkWriting();
 
-		if (stream == rx) {
+
+		if (stream && stream == rx) {
 
 			// Limit number of samples to avoid overflow
 			size_t readElems = min(rx_buffer->getSamplesLeft(),  numElems);
@@ -199,7 +223,6 @@ public:
 			// Suboptimal buffer size? Adjust buffer size?
 			//if (readElems < numElems)
 			//	cerr << "§";
-
 
 			void* shmbuffs[] = {
 				rx_buffer->getWritePointer<void>()
@@ -233,7 +256,7 @@ public:
 			return ret;
 		}
 
-		return -1;
+		return 0;
 	}
 
 	int writeStream(SoapySDR::Stream *stream, const void *const *buffs, const size_t numElems, int &flags, const long long timeNs=0, const long timeoutUs=100000) {
@@ -265,7 +288,6 @@ public:
 	void releaseWriteBuffer(SoapySDR::Stream *stream, const size_t handle, const size_t numElems, int &flags, const long long timeNs=0) {
 		return slave->releaseWriteBuffer(stream, handle, numElems, flags, timeNs);
 	}
-
 
 	std::vector<std::string> listAntennas(const int direction, const size_t channel) const {
 		return slave->listAntennas(direction, channel);
@@ -424,6 +446,7 @@ private:
 	SoapySDR::Stream* rx, *tx; // Slave device stream handles
 
 	size_t bufsize;
+	int tx_activated;
 
 };
 

@@ -76,7 +76,6 @@ class SharedRingBuffer
 			return static_cast<T*>(shm_pointer + datasize * prev);
 		}
 
-
 		/*
 		 * Move end torwards
 		 */
@@ -93,8 +92,9 @@ class SharedRingBuffer
 		std::string getFormat() const;
 
 		/*
+		 * Returns true if the settings have changed from previous call.
 		 */
-		bool settingsChanged() const;
+		bool settingsChanged();
 
 		/*
 		 * Get datasize
@@ -121,6 +121,15 @@ class SharedRingBuffer
 		 */
 		double getSampleRate() const { return state->sample_rate; }
 
+		/*
+		 * Try to acquire the write lock for writing to the buffer
+		 */
+		void acquireWriteLock();
+
+		/*
+		 * Release the write lock
+		 */
+		void releaseWriteLock();
 
 	private:
 
@@ -132,8 +141,8 @@ class SharedRingBuffer
 		void* shm_pointer;
 		BufferState* state;
 
-		size_t prev;
-		size_t version;
+		size_t prev, version;
+		bool created;
 };
 
 #endif /* __SHARED_RING_BUFFER_H__ */

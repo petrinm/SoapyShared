@@ -40,6 +40,9 @@ public:
 		// Open shared memory buffer
 		rx_buffer = unique_ptr<SharedRingBuffer>(new SharedRingBuffer(shm));
 
+		if (SharedRingBuffer::checkSHM(shm + "_tx"))
+			tx_buffer = unique_ptr<SharedRingBuffer>(new SharedRingBuffer(shm + "_tx"));
+
 		// IIR for decimation
 		iir = iirfilt_crcf_create_lowpass(7, 0.4);
 		decimation_factor = 1;
@@ -51,6 +54,30 @@ public:
 
 	}
 
+	void update_downconverter() {
+
+		// Check decimation factor
+		decimation_factor = rx_buffer->getSampleRate() / sample_rate;
+		cerr << "Decimation factor: " << (rx_buffer->getSampleRate() / sample_rate) << endl;
+
+		if (rx_buffer->getSampleRate() / sample_rate != (double)decimation_factor)
+			throw runtime_error("Non-integer decimation factor!");
+
+		if (decimation_factor != 1 && rx_buffer->getFormat() != "CF32")
+			throw runtime_error("Decimation not supported with integers!");
+
+		// Update filter
+		if (decimation_factor != 1)
+			iir = iirfilt_crcf_create_lowpass(6, 0.5 / decimation_factor);
+
+
+		// Calculate new frequency offset for mixing
+		double offset = rx_buffer->getCenterFrequency() - center_frequency;
+		cerr << "Frequency offset: " << -offset << "Hz" << endl;
+
+		// Update NCO
+		nco_crcf_set_frequency(mixer, 2*M_PI * offset / rx_buffer->getSampleRate());
+	}
 
 	string getDriverKey(void) const {
 		return "Leecher";
@@ -68,22 +95,27 @@ public:
 	}
 
 	size_t getNumChannels(const int dir) const {
-		(void) dir; return 1;
+		if (dir == SOAPY_SDR_RX)
+			return 1;
+		else // (dir == SOAPY_SDR_TX)
+			return (tx_buffer != NULL) ? 1 : 0;
 	}
 
 	bool getFullDuplex(const int direction, const size_t channel) const {
-		(void) direction; (void) channel; return true;
+		(void) direction; (void) channel;
+		return (tx_buffer != NULL);
 	}
 
 	std::vector<std::string> getStreamFormats(const int direction, const size_t channel) const {
 		vector<string> formats;
-		double dunno;
-		formats.push_back(getNativeStreamFormat(direction, channel, dunno));
+		// if (direction == SOAPY_SDR_RX)
+		formats.push_back(rx_buffer->getFormat());
 		return formats;
 	}
 
 	string getNativeStreamFormat(const int direction, const size_t channel, double &fullScale) const {
 		(void)direction; (void)channel; (void)fullScale;
+		fullScale = rx_buffer->getSampleRate();
 		return rx_buffer->getFormat();
 	}
 
@@ -98,15 +130,14 @@ public:
 			if (rx_buffer->getFormat() != format)
 				throw runtime_error("Invalid format!");
 
-			// Nothing to do...
-			return RX_STREAM;
+			return RX_STREAM; // Return RX-handle
 		}
 		else if (direction == SOAPY_SDR_TX) {
 
-			tx_buffer = unique_ptr<SharedRingBuffer>(new SharedRingBuffer(shm + "_tx"));
+			if (tx_buffer->getFormat() != format)
+				throw runtime_error("Invalid format!");
 
-			throw runtime_error("Not implemented yet!");
-			return TX_STREAM;
+			return TX_STREAM; // Return TX-handle
 		}
 		return NULL;
 	}
@@ -114,17 +145,32 @@ public:
 
 	void closeStream (SoapySDR::Stream *stream) {
 		cerr << "closeStream(" << (stream == RX_STREAM ? "RX" : "TX") << ")" << endl;
+		if (stream == RX_STREAM) {
+			// ?
+		}
+		else if (stream == TX_STREAM) {
+			// ?
+		}
 	}
 
-
+	/*
+	 * The last setup for the stream before actual data!
+	 */
 	int activateStream(SoapySDR::Stream *stream, const int flags=0, const long long timeNs=0, const size_t numElems=0) {
 		(void) flags; (void)timeNs; (void)numElems;
 		cerr << "activateStream" << endl;
+
 		if (stream == RX_STREAM) {
 			rx_buffer->sync();
 			decimation_counter = 0;
 			return 0;
 		}
+		else if (stream == TX_STREAM) {
+			// Aqcuire the write lock!
+			tx_buffer->acquireWriteLock();
+			return 0;
+		}
+
 		return -1;
 	}
 
@@ -134,11 +180,16 @@ public:
 			// Nothing to do
 		}
 		else if (stream == TX_STREAM) {
-			//close(tx_socket);
+			// Release the write lock?
+			tx_buffer->releaseWriteLock();
 		}
 		return -1;
 	}
 
+
+	/*
+	 *
+	 */
 	int mix(void* const dst, const void* src, size_t numElems, size_t maxpro) {
 
 		// TODO: Decimation works only with CF32
@@ -165,24 +216,25 @@ public:
 			if (decimation_counter >= decimation_factor) {
 				output[new_samples++] = tmpp;
 				decimation_counter = 0;
-				if (new_samples >= maxpro)
-					break;
+
+				if (new_samples > maxpro) // Over production!!!
+					cerr << "&" << endl;
 			}
-
-
 		}
-
+		//cout <<  "! " << maxpro << "   " << new_samples << "       " << numElems << "  " << k << endl;
 		return new_samples;
 	}
+
 
 	int readStream(SoapySDR::Stream *stream, void *const *buffs, const size_t numElems, int &flags, long long &timeNs, const long timeoutUs=100000) {
 		(void) flags; (void) timeNs;
 
 		if (stream == RX_STREAM) {
 
+			// Have the stream setting changed?
 			if (rx_buffer->settingsChanged()) {
-				// Setting have changes!
-				// TODO: Update mixer and decimation!
+				cerr << "Settings changed!" << endl;
+				update_downconverter();
 			}
 
 			// Try to read stuff
@@ -191,15 +243,17 @@ public:
 			while (timeout > 0) {
 
 				if (rx_buffer->getSamplesAvailable() == 0) {
-					cerr << "W"; // Suboptimality warning!
+					//cerr << "W";
 					usleep(10000); // no new data so wait for sometime...
 					timeout -= 10000;
 					continue;
 				}
 
+
 				// How much dada we have?
 				void* read_pointer = rx_buffer->getReadPointer<void>();
 				size_t samples_available = rx_buffer->read(numElems * decimation_factor);
+				//cout << "# " <<  samples_available << "  " <<  rx_buffer->getSamplesAvailable() << endl;
 
 				// Memcopy or decimate
 				if (decimation_factor > 1)
@@ -216,22 +270,33 @@ public:
 		return -1;
 	}
 
+
+	/*
+	 *
+	 */
 	int writeStream(SoapySDR::Stream *stream, const void *const *buffs, const size_t numElems, int &flags, const long long timeNs=0, const long timeoutUs=100000) {
 		(void) flags; (void) timeNs;
 
 		if (stream == TX_STREAM) {
 
+			// First write!
 			size_t first_write = min(rx_buffer->getSamplesLeft(),  numElems);
-
-			//
 			memcpy(tx_buffer->getWritePointer<void>(), *buffs, first_write * tx_buffer->getDatasize());
 			tx_buffer->moveEnd(first_write); // Move the end!
 
 			// Second write if overflow happend
 			if (first_write < numElems) {
+				cerr << '%' << endl;
 				memcpy(tx_buffer->getWritePointer<void>(), *buffs, first_write * tx_buffer->getDatasize());
 				tx_buffer->moveEnd(numElems - first_write); // Move the end!
 			}
+
+			// TODO: Some sort of rate control would be nice!
+
+			// Some ratelimiting!?
+			//usleep((0.5 * numElems) * (1000000 / tx_buffer->getSampleRate()));
+
+			return numElems;
 
 		}
 
@@ -259,52 +324,55 @@ public:
 
 
 		if (direction == SOAPY_SDR_RX) {
-
 			center_frequency = frequency;
-
-			double offset = rx_buffer->getCenterFrequency() - center_frequency;
-			cerr << "Offset: " << offset << "Hz" << endl;
-
-			nco_crcf_set_frequency(mixer, 2*M_PI * offset / rx_buffer->getSampleRate());
+			update_downconverter();
 		}
-		else {
-
-			// TODO
+		else if (direction == SOAPY_SDR_TX) {
+			if (!tx_buffer)
+				throw runtime_error("TX not available");
+			tx_buffer->setCenterFrequency(frequency);
 		}
 
 	}
 
 	double getFrequency(const int direction, const size_t channel) const {
-		if (direction == SOAPY_SDR_RX)
-			return center_frequency;
-		else
-			return 0.0; // TODO
+		if (direction == SOAPY_SDR_RX) {
+			return center_frequency; // Return mixed cetner frequency
+		}
+		else { // if (direction == SOAPY_SDR_TX) {
+			if (!tx_buffer)
+				throw runtime_error("TX not available");
+			return tx_buffer->getCenterFrequency();
+		}
 	}
 
 
 	void setSampleRate(const int direction, const size_t channel, const double rate) {
-		sample_rate = rate;
 
-		if (rx_buffer->getSampleRate() < sample_rate)
-			throw runtime_error("Interpolation not supported!");
+		if (direction == SOAPY_SDR_RX) {
 
-		// Check decimation factor
-		decimation_factor = rx_buffer->getSampleRate() / sample_rate;
-		cerr << "Decimation factor: " << (rx_buffer->getSampleRate() / sample_rate) << endl;
+			if (rx_buffer->getSampleRate() < rate)
+				throw runtime_error("Interpolation not supported!");
 
-		if (rx_buffer->getSampleRate() / sample_rate != (double)decimation_factor)
-			throw runtime_error("Non-integer decimation factor!");
-
-		if (decimation_factor != 1 && rx_buffer->getFormat() != "CF32")
-			throw runtime_error("Decimation not supported with integers!");
-
-		// Update filter
-		if (decimation_factor != 1)
-			iir = iirfilt_crcf_create_lowpass(9, 0.5 / decimation_factor);
+			sample_rate = rate;
+			update_downconverter();
+		}
+		else { // if (direction == SOAPY_SDR_TX) {
+			if (!tx_buffer)
+				throw runtime_error("TX not available");
+			tx_buffer->setSampleRate(rate);
+		}
 	}
 
 	double getSampleRate(const int direction, const size_t channel) const {
-		return sample_rate;
+		if (direction == SOAPY_SDR_RX) {
+			return sample_rate; // Return sample rate after decimation
+		}
+		else { // if (direction == SOAPY_SDR_TX) {
+			if (!tx_buffer)
+				throw runtime_error("TX not available");
+			return tx_buffer->getSampleRate();
+		}
 	}
 
 	/*SoapySDR::RangeList getSampleRateRange(const int direction, const size_t channel) const {
@@ -333,10 +401,8 @@ private:
 	string shm;
 	unique_ptr<SharedRingBuffer> rx_buffer, tx_buffer;
 
-	double center_frequency, tx_frequency;
-	double sample_rate;
+	double center_frequency, sample_rate;
 	size_t decimation_factor, decimation_counter;
-
 
 	// DSP blocks
 	nco_crcf mixer;

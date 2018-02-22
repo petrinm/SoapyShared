@@ -24,22 +24,28 @@ using namespace std;
 
 
 /*
- * Private contructor!! Create new instances using openForWriting and openForReading functions.
+ * TODO:
+ * - Could be implemented with Boost Shared Memory for cross-platform support but meh...
  */
+
+
+
 SharedRingBuffer::SharedRingBuffer(std::string name, std::string format, size_t buffer_size):
 	name(name), datasize(0), buffer_size(buffer_size),
-	shm_fd(-1), shm_pointer(NULL), state(NULL), prev(0)
+	shm_fd(-1), shm_pointer(NULL), state(NULL), prev(0), created(false)
 {
-
-	// Open/create SHM!
-	if ((shm_fd = shm_open(name.c_str(), O_CREAT | O_RDWR, 0644)) < 0)
-		throw runtime_error(strerror(errno));
 
 	size_t shm_size;
 
 	if (buffer_size != 0) {
-		// Create new buffer
 
+		// Create new SHM!
+		if ((shm_fd = shm_open(name.c_str(), O_CREAT | O_RDWR, 0644)) < 0)
+			throw runtime_error(string("shm_open: ") + string(strerror(errno)));
+
+		created = true;
+
+		// Create new buffer
 		datasize = SoapySDR::formatToSize(format);
 
 		if (datasize == 0)
@@ -50,31 +56,36 @@ SharedRingBuffer::SharedRingBuffer(std::string name, std::string format, size_t 
 
 		// Resize SHM!
 		if (ftruncate(shm_fd, shm_size) < 0)
-			throw runtime_error(strerror(errno));
+			throw runtime_error(string("ftruncate: ") + string(strerror(errno)));
 
 	}
 	else {
 
+		// Open SHM!
+		if ((shm_fd = shm_open(name.c_str(), O_CREAT | O_RDWR, 0644)) < 0)
+			throw runtime_error(string("shm_open: ") + string(strerror(errno)));
+
 		// Get size of the allocated memory
 		struct stat shm_stat;
 		if (fstat(shm_fd, &shm_stat) < 0)
-			throw runtime_error(strerror(errno));
+			throw runtime_error(string("fstat: ") + string(strerror(errno)));
 
 		shm_size = shm_stat.st_size;
 
+		if (shm_size == 0)
+			throw runtime_error("SHM is empty!");
 	}
 
+	cerr << "shm_size " <<  shm_size << endl;
 
 	// Memory map it!
 	if ((shm_pointer = mmap(0, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0)) == MAP_FAILED)
-		throw runtime_error(strerror(errno));
+		throw runtime_error(string("mmap: ") + string(strerror(errno)));
 
 	state = static_cast<BufferState*>((void*)shm_pointer + shm_size - sizeof(struct BufferState));
 
 
 	if (buffer_size != 0) {
-
-		cerr << "INIT!!!!" << endl;
 		// Init metadata struct
 		state->end = 0;
 		version = state->version = 1;
@@ -97,7 +108,7 @@ SharedRingBuffer::SharedRingBuffer(std::string name, std::string format, size_t 
 
 #if 1
 	cerr << endl;
-	cerr << "Ring buffer info: (version #" << state->version << ")"  << endl;
+	cerr << name << ": (version #" << state->version << ")"  << endl;
 	cerr << "   Format: " << state->format << " (" << datasize << " bytes)" << endl;
 	cerr << "   Center frequency: " << state->center_frequency << endl;
 	cerr << "   Sample rate: " << state->sample_rate << endl;
@@ -116,14 +127,18 @@ bool SharedRingBuffer::checkSHM(std::string name) {
 	return fd > 0;
 }
 
+
 SharedRingBuffer::~SharedRingBuffer() {
 
 	// Close the shared memory buffer
 	if (shm_fd > 0) {
-		//shm_unlink(shm.c_str()); // TODO!
 		close(shm_fd);
 		shm_fd = -1;
 	}
+
+	// Destroy the SHM only if we created it!
+	if (created)
+		shm_unlink(name.c_str());
 
 	// Unmap shared memory
 	if (shm_pointer) {
@@ -154,10 +169,19 @@ size_t SharedRingBuffer::read(size_t maxElems) {
 	size_t samples_available;
 	size_t nextp = state->end;
 
-	if (nextp < prev) // Has the buffer wrapped around?
+	if (nextp < prev) {// Has the buffer wrapped around?
 		samples_available = buffer_size - prev;
-	else
+		//cerr << "a " << (samples_available + nextp) << "  "  << (buffer_size / 2) << endl;
+		if (samples_available + nextp > buffer_size / 2)
+			cerr << "U";
+
+	}
+	else {
 		samples_available = nextp - prev;
+		//cerr << "b " << samples_available << "  "  << (buffer_size / 2) << endl;
+		if (samples_available > buffer_size / 2)
+			cerr << "U";
+	}
 
 #if 0
 	cerr << endl;
@@ -168,7 +192,7 @@ size_t SharedRingBuffer::read(size_t maxElems) {
 #endif
 
 	// Possible overflow situation
-	assert(samples_available < buffer_size / 3 && "Overflow!");
+
 
 	// Limit number of used samples
 	if (samples_available > maxElems)
@@ -194,8 +218,13 @@ std::string SharedRingBuffer::getFormat() const {
 	return state ? state->format :  "-";
 }
 
-bool SharedRingBuffer::settingsChanged() const {
-	return state ? (version == state->version) : false;
+bool SharedRingBuffer::settingsChanged() {
+	if (state) {
+		size_t prev = version;
+		version = state->version;
+		return (prev != state->version);
+	}
+	return false;
 }
 
 void SharedRingBuffer::setCenterFrequency(double frequency) {
@@ -206,4 +235,13 @@ void SharedRingBuffer::setCenterFrequency(double frequency) {
 void SharedRingBuffer::setSampleRate(double rate) {
 	state->sample_rate = rate;
 	state->version++;
+}
+
+void SharedRingBuffer::acquireWriteLock() {
+	/* TODO */
+}
+
+void SharedRingBuffer::releaseWriteLock() {
+	/* TODO */
+	// Make sure we had the lock!
 }
