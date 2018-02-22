@@ -54,7 +54,7 @@ public:
 
 	}
 
-	void update_downconverter() {
+	void update_converter() {
 
 		// Check decimation factor
 		decimation_factor = rx_buffer->getSampleRate() / sample_rate;
@@ -234,7 +234,7 @@ public:
 			// Have the stream setting changed?
 			if (rx_buffer->settingsChanged()) {
 				cerr << "Settings changed!" << endl;
-				update_downconverter();
+				update_converter();
 			}
 
 			// Try to read stuff
@@ -325,7 +325,7 @@ public:
 
 		if (direction == SOAPY_SDR_RX) {
 			center_frequency = frequency;
-			update_downconverter();
+			update_converter();
 		}
 		else if (direction == SOAPY_SDR_TX) {
 			if (!tx_buffer)
@@ -355,7 +355,7 @@ public:
 				throw runtime_error("Interpolation not supported!");
 
 			sample_rate = rate;
-			update_downconverter();
+			update_converter();
 		}
 		else { // if (direction == SOAPY_SDR_TX) {
 			if (!tx_buffer)

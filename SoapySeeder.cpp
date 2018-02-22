@@ -68,15 +68,12 @@ public:
 			tx = slave->setupStream(SOAPY_SDR_TX, tx_format /*, channels, args*/);
 		}
 
-
 	}
-
 
 	void checkWriting() {
 
 		if(!tx_buffer)
 			return;
-
 
 		// Update transmission settings
 		if (tx_buffer->settingsChanged()) {
@@ -180,6 +177,7 @@ public:
 		}
 		else if (direction == SOAPY_SDR_TX) {
 			throw runtime_error("Not possible!");
+			return slave->setupStream(direction, format, channels, args);
 		}
 
 		return NULL;

@@ -1,5 +1,4 @@
 #include <unistd.h>
-#include <assert.h>
 #include <stdint.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -16,7 +15,6 @@
 #include <SoapySDR/Registry.hpp>
 #include <SoapySDR/Formats.hpp>
 
-
 #include "SharedRingBuffer.hpp"
 
 
@@ -27,7 +25,6 @@ using namespace std;
  * TODO:
  * - Could be implemented with Boost Shared Memory for cross-platform support but meh...
  */
-
 
 
 SharedRingBuffer::SharedRingBuffer(std::string name, std::string format, size_t buffer_size):
@@ -76,7 +73,6 @@ SharedRingBuffer::SharedRingBuffer(std::string name, std::string format, size_t 
 			throw runtime_error("SHM is empty!");
 	}
 
-	cerr << "shm_size " <<  shm_size << endl;
 
 	// Memory map it!
 	if ((shm_pointer = mmap(0, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0)) == MAP_FAILED)
@@ -152,7 +148,6 @@ SharedRingBuffer::~SharedRingBuffer() {
 
 void SharedRingBuffer::sync() {
 	prev = state->end;
-	cerr << "sync! " << prev << endl;
 }
 
 size_t SharedRingBuffer::getSamplesAvailable() {
@@ -190,9 +185,6 @@ size_t SharedRingBuffer::read(size_t maxElems) {
 	cerr << "buffer_size = " << buffer_size << endl;
 	cerr << endl;
 #endif
-
-	// Possible overflow situation
-
 
 	// Limit number of used samples
 	if (samples_available > maxElems)
