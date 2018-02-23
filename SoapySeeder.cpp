@@ -10,9 +10,12 @@
 #include <algorithm> // min
 #include <memory> // unique_ptr
 #include <cstring> // memcpy
-
+#include <pthread.h>
+#include <unistd.h>
 
 using namespace std;
+
+void* txing(void* p);
 
 /***********************************************************************
  * Device interface
@@ -55,72 +58,11 @@ public:
 		if (slave.get() == NULL)
 			throw runtime_error("No slave device found!");
 
-		// Create TX buffer also so leechers can attact to it
 		if (args.find("tx") != args.end()) {
-
-			string tx_format = "CF32";
-			size_t tx_buffer_size = 0x1000000; // 16 MSamples
-
-			tx_buffer = unique_ptr<SharedRingBuffer>(new SharedRingBuffer(shm + "_tx", tx_format, tx_buffer_size));
-
-			// Setup the tx stream ready on the slave devices
-			//std::vector<size_t> channels;
-			tx = slave->setupStream(SOAPY_SDR_TX, tx_format /*, channels, args*/);
+			// Create TX buffer/thread also so leechers can transmit
+			pthread_create(&tx_thread, NULL, txing, (void *)slave.get());
 		}
 
-	}
-
-	void checkWriting() {
-
-		if(!tx_buffer)
-			return;
-
-		// Update transmission settings
-		if (tx_buffer->settingsChanged()) {
-			cerr << "New TX settings!" << endl;
-			slave->setFrequency(SOAPY_SDR_TX, 0, tx_buffer->getCenterFrequency());
-			slave->setSampleRate(SOAPY_SDR_TX, 0, tx_buffer->getSampleRate());
-		}
-
-		if (tx_buffer->getSamplesAvailable()) {
-
-			// Activate TX stream if needed
-			if (tx_activated == 0) {
-				cerr << "Activating TX!" << endl;
-				slave->activateStream(tx, /* flags = */ 0, /* timeNs = */ 0, /*numElems = */ 0);
-			}
-
-			tx_activated = 1;
-
-			void* shmbuffs[] = {
-				tx_buffer->getReadPointer<void>()
-			};
-
-			size_t readElems = tx_buffer->read(16 * 1024);
-
-			// Read the real stream
-			int flags;
-			if (slave->writeStream(tx, shmbuffs, readElems, flags /*, const long long timeNs=0, const long timeoutUs=100000*/) < 0)
-				throw runtime_error("Write failed!");
-
-		}
-		else if (tx_activated > 0) {
-
-			//
-			size_t channelMask = 0;
-			int flags = 0;
-			long long timeNs = 0;
-
-			// Check if TX-buffer underflow has occured
-			if (slave->readStreamStatus(tx, channelMask, flags, timeNs) == SOAPY_SDR_UNDERFLOW)
-				tx_activated--;
-
-			if (tx_activated == 0) {
-				cerr << "Deactivating TX!" << endl;
-				slave->deactivateStream(tx, /* flags = */ 0, /* timeNs = */ 0);
-			}
-
-		}
 	}
 
 
@@ -210,10 +152,7 @@ public:
 
 	int readStream(SoapySDR::Stream *stream, void *const *buffs, const size_t numElems, int &flags, long long &timeNs, const long timeoutUs=100000) {
 
-		checkWriting();
-
-
-		if (stream && stream == rx) {
+		if (stream == rx) {
 
 			// Limit number of samples to avoid overflow
 			size_t readElems = min(rx_buffer->getSamplesLeft(),  numElems);
@@ -244,7 +183,6 @@ public:
 			if (0 && readElems < numElems) {
 				//
 			}
-
 
 			// Copy data also to caller's buffer
 			memcpy(*buffs, *shmbuffs, rx_buffer->getDatasize() * ret);
@@ -445,8 +383,93 @@ private:
 
 	size_t bufsize;
 	int tx_activated;
-
+	pthread_t tx_thread;
 };
+
+
+void* txing(void* p) {
+
+	SoapySDR::Device* slave = static_cast<SoapySDR::Device*>(p);
+
+	usleep(1000000); // Delay the startup a bit so life is a bit better!
+
+
+	string tx_format = "CF32";
+	size_t tx_buffer_size = 0x1000000; // 16 MSamples
+
+	// TODO: Hardcoded SHM name!
+	unique_ptr<SharedRingBuffer>tx_buffer(new SharedRingBuffer("soapy_tx", tx_format, tx_buffer_size));
+
+
+	// Setup the tx stream ready on the slave devices
+	SoapySDR::Stream* tx = slave->setupStream(SOAPY_SDR_TX, tx_format /*, channels, args*/);
+
+
+	int tx_activated = 0;
+
+	cerr << "TX thread running..." << endl;
+	while (1) {
+
+		// Update transmission settings
+		if (tx_buffer->settingsChanged()) {
+			cerr << "New TX settings!" << endl;
+			slave->setFrequency(SOAPY_SDR_TX, 0, tx_buffer->getCenterFrequency());
+			slave->setSampleRate(SOAPY_SDR_TX, 0, tx_buffer->getSampleRate());
+		}
+
+		if (tx_buffer->getSamplesAvailable()) {
+
+			// Activate TX stream if needed
+			if (tx_activated == 0) {
+				cerr << "Activating TX!" << endl;
+				slave->activateStream(tx, /* flags = */ 0, /* timeNs = */ 0, /*numElems = */ 0);
+			}
+
+			tx_activated = 1;
+
+			void* shmbuffs[] = {
+				tx_buffer->getReadPointer<void>()
+			};
+
+			size_t readElems = tx_buffer->read(64 * 1024);
+
+			// Read the real stream
+			int flags;
+			if (slave->writeStream(tx, shmbuffs, readElems, flags /*, const long long timeNs=0, const long timeoutUs=100000*/) < 0)
+				throw runtime_error("Write failed!");
+
+			if (flags)
+				cerr << "flags: " << flags << endl;
+
+		}
+		else if (tx_activated > 0) {
+
+			//
+			size_t channelMask = 0;
+			int flags = 0;
+			long long timeNs = 0;
+
+			// Check if TX-buffer underflow has occured
+			if (slave->readStreamStatus(tx, channelMask, flags, timeNs) == SOAPY_SDR_UNDERFLOW)
+				tx_activated--;
+
+#if 0
+			if (flags)
+				cerr << "status flags: " << flags << endl;
+#endif
+
+			if (tx_activated == 0) {
+				cerr << "Deactivating TX!" << endl;
+				slave->deactivateStream(tx, /* flags = */ 0, /* timeNs = */ 0);
+			}
+
+		}
+		else
+			usleep(500);
+	}
+
+}
+
 
 /***********************************************************************
  * Find available devices

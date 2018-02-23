@@ -183,7 +183,7 @@ public:
 			// Release the write lock?
 			tx_buffer->releaseWriteLock();
 		}
-		return -1;
+		return 0;
 	}
 
 

@@ -19,7 +19,7 @@ set(CMAKE_BUILD_TYPE ${CMAKE_BUILD_TYPE} CACHE STRING "")
 # These may be found within the build tree or in an external project.
 ########################################################################
 #set(SOAPY_SHARED_INCLUDE_DIRS ...)
-set (SOAPY_SHARED_LIBRARIES rt liquid) # For Shared Memory Stuff
+set (SOAPY_SHARED_LIBRARIES rt liquid pthread)
 set (CMAKE_CXX_STANDARD 14)
 set (CMAKE_CXX_FLAGS "-Wno-pointer-arith -Wno-unused-parameter") # Silence pointer arithmetic warnings
 
