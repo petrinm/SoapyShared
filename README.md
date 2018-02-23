@@ -1,14 +1,16 @@
 # SoapyShared
 
-SoapyShared consists a pair of virtual SoapySDR devices drivers which can be used to share single physical device to multiple software using POSIX shared memory ring buffer.
-One "master" process attaches to physical device via SoapySeeder which forwards all the command to the actual driver but at the same time copies all received data to a shared ring buffer. After this the SoapyLeecher device can created and attached to the shared memory buffer. Leecher device works like any SDR device except it cannot. Streamed data from shared buffer can be up/downconverted and decimated on fly.
+SoapyShared consists a pair of virtual SoapySDR devices drivers which can be used to share single physical device to multiple ones using POSIX shared memory ring buffer.
+One "master" process attaches to physical device via SoapySeeder-driver which forwards all the command to the actual driver but at the same time copies all received data to a shared ring buffer. After creation of the ring buffer virtual SDR devices using SoapySeeder appear and can be used to attach same RX-stream with minimal overhead and latency. Leecher device works like any SDR device except it cannot control the physical device. Streamed data from shared buffer can also transparently up/downconverted and decimated.
+If your SDR supports full duplex leechers can even transmit over the shared memory.
 
-So, how should I use it? For example when you want to use your SDR from multiple processes and the software itself doesn't support it. In this case you can open the device for example with GQRX via seeder driver. GQRX will show the whole band to you and bigger picture of what is happening. After this you can start developing a modem software using GNURadio tools and attach to the RX stream without loosing the waterfall on GQRX. If your SDR supports full duplex you can even transmit using the leecher device (TODO).
+So, how and when should I use it?
+For example when you want to abstract the physical device SDR away from the signal processing software or when you want to use your SDR from multiple processes and the software itself doesn't support it. In this case you can open the device for example with GQRX via seeder driver, setup all gains etc once. GQRX will now show the whole band to you and bigger picture of what is happening on the frequency band. After this you can start developing a signal processing software using GNURadio tools and attach to the RX stream without loosing the waterfall on GQRX. Also because the SoapyShared has abstracted all physical stuff away, there is no need to set up and initializing the hardware when new software is started.
 
 
 **This driver is still under development so random crashes and memory leaks are part of feature list!**
 
-**The code is not the most generic implementation and ATM created to fit my requirements**
+**The code is not the most generic implementation and ATM it's done to fit just my requirements**
 
 
 ## Installation
