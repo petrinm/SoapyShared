@@ -70,14 +70,6 @@ public:
 		return "Seeder";
 	}
 
-	string getHardwareKey(void) const {
-		return slave->getHardwareKey();
-	}
-
-	SoapySDR::Kwargs getHardwareInfo(void) const {
-		return slave->getHardwareInfo();
-	}
-
 	size_t getNumChannels(const int dir) const {
 		return 1;
 	}
@@ -86,18 +78,9 @@ public:
 		return false;
 	}
 
-	SoapySDR::ArgInfoList getSettingInfo(void) const {
-		return slave->getSettingInfo();
-	}
-
 	std::vector<std::string> getStreamFormats(const int direction, const size_t channel) const {
 		return slave->getStreamFormats(direction, channel);
 	}
-
-	string getNativeStreamFormat(const int direction, const size_t channel, double &fullScale) const {
-		return slave->getNativeStreamFormat(direction, channel, fullScale);
-	}
-
 
 	virtual SoapySDR::Stream* setupStream (const int direction, const std::string &format,
 		const std::vector<size_t> &channels = std::vector<size_t>(),
@@ -225,119 +208,11 @@ public:
 		return slave->releaseWriteBuffer(stream, handle, numElems, flags, timeNs);
 	}
 
-	std::vector<std::string> listAntennas(const int direction, const size_t channel) const {
-		return slave->listAntennas(direction, channel);
-	}
-
-	void setAntenna (const int direction, const size_t channel, const std::string &name) {
-		slave->setAntenna(direction, channel, name);
-	}
-
-	std::string getAntenna (const int direction, const size_t channel) const  {
-		return slave->getAntenna(direction, channel);
-	}
-
-	bool hasDCOffsetMode (const int direction, const size_t channel) const  {
-		return slave->hasDCOffsetMode(direction, channel);
-	}
-
-	void setDCOffsetMode (const int direction, const size_t channel, const bool automatic) {
-		return slave->setDCOffsetMode(direction, channel, automatic);
-	}
-
-	bool getDCOffsetMode (const int direction, const size_t channel) const  {
-		return slave->getDCOffsetMode(direction, channel);
-	}
-
-	bool hasDCOffset (const int direction, const size_t channel) const  {
-		return slave->hasDCOffset(direction, channel);
-	}
-
-	void setDCOffset (const int direction, const size_t channel, const std::complex<double> &offset) {
-		return slave->setDCOffset(direction, channel, offset);
-	}
-
-	std::complex<double> getDCOffset (const int direction, const size_t channel) const {
-		return slave->getDCOffset(direction, channel);
-	}
-
-	bool hasIQBalance (const int direction, const size_t channel) const  {
-		return slave->hasIQBalance(direction, channel);
-	}
-
-	void setIQBalance (const int direction, const size_t channel, const std::complex<double> &balance) {
-		return slave->setIQBalance(direction, channel, balance);
-	}
-
-	std::complex<double> getIQBalance (const int direction, const size_t channel) const  {
-		return slave->getIQBalance(direction, channel);
-	}
-
-	bool hasFrequencyCorrection (const int direction, const size_t channel) const  {
-		return slave->hasFrequencyCorrection(direction, channel);
-	}
-
-	void setFrequencyCorrection (const int direction, const size_t channel, const double value) {
-		return slave->setFrequencyCorrection(direction, channel, value);
-	}
-
-	double getFrequencyCorrection (const int direction, const size_t channel) const  {
-		return slave->getFrequencyCorrection(direction, channel);
-	}
-
-	std::vector<std::string> listGains (const int direction, const size_t channel) const  {
-		return slave->listGains(direction, channel);
-	}
-
-	bool hasGainMode (const int direction, const size_t channel) const  {
-		return slave->hasGainMode(direction, channel);
-	}
-
-	void setGainMode (const int direction, const size_t channel, const bool automatic) {
-		return slave->setGainMode(direction, channel, automatic);
-	}
-
-	bool getGainMode (const int direction, const size_t channel) const  {
-		return slave->getGainMode(direction, channel);
-	}
-
-	void setGain (const int direction, const size_t channel, const double value) {
-		slave->setGain(direction, channel, value);
-	}
-
-	void setGain (const int direction, const size_t channel, const std::string &name, const double value) {
-		slave->setGain(direction, channel, name, value);
-	}
-
-	double getGain (const int direction, const size_t channel) const  {
-		return slave->getGain(direction, channel);
-	}
-
-	double getGain (const int direction, const size_t channel, const std::string &name) const {
-		return slave->getGain(direction, channel, name);
-	}
-
-	SoapySDR::Range getGainRange (const int direction, const size_t channel) const  {
-		return slave->getGainRange(direction, channel);
-	}
-
-	SoapySDR::Range getGainRange (const int direction, const size_t channel, const std::string &name) const {
-		return slave->getGainRange(direction, channel, name);
-	}
-
 	void setFrequency (const int direction, const size_t channel, const double frequency, const SoapySDR::Kwargs &args=SoapySDR::Kwargs()) {
 		cerr << "setFrequency(" << direction << "," << channel << "," << frequency << ")" << endl;
 		slave->setFrequency(direction, channel, frequency, args);
 		if (direction == SOAPY_SDR_RX && rx_buffer)
 			rx_buffer->setCenterFrequency(frequency);
-	}
-
-	double getFrequency (const int direction, const size_t channel) const  {
-		return slave->getFrequency(direction, channel);
-	}
-
-	double getFrequency (const int direction, const size_t channel, const std::string &name) const  {
-		return slave->getFrequency(direction, channel, name);
 	}
 
 	void setSampleRate(const int direction, const size_t channel, const double rate) {
@@ -346,21 +221,189 @@ public:
 			rx_buffer->setSampleRate(rate);
 	}
 
+
+	/**********************************************
+	 *
+	 * Below are wrappers for the rest of methods.
+	 * These are generated by generate_wrappers.py
+	 *
+	 **********************************************/
+
+
+	std::string getHardwareKey(void) const {
+		return slave->getHardwareKey();
+	}
+
+	SoapySDR::Kwargs getHardwareInfo(void) const {
+		return slave->getHardwareInfo();
+	}
+
+	void setFrontendMapping(const int direction, const std::string & mapping) {
+		return slave->setFrontendMapping(direction, mapping);
+	}
+
+	std::string getFrontendMapping(const int direction) const {
+		return slave->getFrontendMapping(direction);
+	}
+
+	SoapySDR::Kwargs getChannelInfo(const int direction, const size_t channel) const {
+		return slave->getChannelInfo(direction, channel);
+	}
+
+	std::string getNativeStreamFormat(const int direction, const size_t channel, double & fullScale) const {
+		return slave->getNativeStreamFormat(direction, channel, fullScale);
+	}
+
+	SoapySDR::ArgInfoList getStreamArgsInfo(const int direction, const size_t channel) const {
+		return slave->getStreamArgsInfo(direction, channel);
+	}
+
+	size_t getStreamMTU(SoapySDR::Stream * stream) const {
+		return slave->getStreamMTU(stream);
+	}
+
+	int getDirectAccessBufferAddrs(SoapySDR::Stream * stream, const size_t handle, void * * buffs) {
+		return slave->getDirectAccessBufferAddrs(stream, handle, buffs);
+	}
+
+	std::vector<std::string> listAntennas(const int direction, const size_t channel) const {
+		return slave->listAntennas(direction, channel);
+	}
+
+	void setAntenna(const int direction, const size_t channel, const std::string & name) {
+		return slave->setAntenna(direction, channel, name);
+	}
+
+	std::string getAntenna(const int direction, const size_t channel) const {
+		return slave->getAntenna(direction, channel);
+	}
+
+	bool hasDCOffsetMode(const int direction, const size_t channel) const {
+		return slave->hasDCOffsetMode(direction, channel);
+	}
+
+	void setDCOffsetMode(const int direction, const size_t channel, const bool automatic) {
+		return slave->setDCOffsetMode(direction, channel, automatic);
+	}
+
+	bool getDCOffsetMode(const int direction, const size_t channel) const {
+		return slave->getDCOffsetMode(direction, channel);
+	}
+
+	bool hasDCOffset(const int direction, const size_t channel) const {
+		return slave->hasDCOffset(direction, channel);
+	}
+
+	void setDCOffset(const int direction, const size_t channel, const std::complex<double> & offset) {
+		return slave->setDCOffset(direction, channel, offset);
+	}
+
+	std::complex<double> getDCOffset(const int direction, const size_t channel) const {
+		return slave->getDCOffset(direction, channel);
+	}
+
+	bool hasIQBalance(const int direction, const size_t channel) const {
+		return slave->hasIQBalance(direction, channel);
+	}
+
+	void setIQBalance(const int direction, const size_t channel, const std::complex<double> & balance) {
+		return slave->setIQBalance(direction, channel, balance);
+	}
+
+	std::complex<double> getIQBalance(const int direction, const size_t channel) const {
+		return slave->getIQBalance(direction, channel);
+	}
+
+	bool hasFrequencyCorrection(const int direction, const size_t channel) const {
+		return slave->hasFrequencyCorrection(direction, channel);
+	}
+
+	void setFrequencyCorrection(const int direction, const size_t channel, const double value) {
+		return slave->setFrequencyCorrection(direction, channel, value);
+	}
+
+	double getFrequencyCorrection(const int direction, const size_t channel) const {
+		return slave->getFrequencyCorrection(direction, channel);
+	}
+
+	std::vector<std::string> listGains(const int direction, const size_t channel) const {
+		return slave->listGains(direction, channel);
+	}
+
+	bool hasGainMode(const int direction, const size_t channel) const {
+		return slave->hasGainMode(direction, channel);
+	}
+
+	void setGainMode(const int direction, const size_t channel, const bool automatic) {
+		return slave->setGainMode(direction, channel, automatic);
+	}
+
+	bool getGainMode(const int direction, const size_t channel) const {
+		return slave->getGainMode(direction, channel);
+	}
+
+	void setGain(const int direction, const size_t channel, const double value) {
+		return slave->setGain(direction, channel, value);
+	}
+
+	void setGain(const int direction, const size_t channel, const std::string & name, const double value) {
+		return slave->setGain(direction, channel, name, value);
+	}
+
+	double getGain(const int direction, const size_t channel) const {
+		return slave->getGain(direction, channel);
+	}
+
+	double getGain(const int direction, const size_t channel, const std::string & name) const {
+		return slave->getGain(direction, channel, name);
+	}
+
+	SoapySDR::Range getGainRange(const int direction, const size_t channel) const {
+		return slave->getGainRange(direction, channel);
+	}
+
+	SoapySDR::Range getGainRange(const int direction, const size_t channel, const std::string & name) const {
+		return slave->getGainRange(direction, channel, name);
+	}
+
+	double getFrequency(const int direction, const size_t channel) const {
+		return slave->getFrequency(direction, channel);
+	}
+
+	double getFrequency(const int direction, const size_t channel, const std::string & name) const {
+		return slave->getFrequency(direction, channel, name);
+	}
+
+	std::vector<std::string> listFrequencies(const int direction, const size_t channel) const {
+		return slave->listFrequencies(direction, channel);
+	}
+
+	SoapySDR::RangeList getFrequencyRange(const int direction, const size_t channel) const {
+		return slave->getFrequencyRange(direction, channel);
+	}
+
+	SoapySDR::RangeList getFrequencyRange(const int direction, const size_t channel, const std::string & name) const {
+		return slave->getFrequencyRange(direction, channel, name);
+	}
+
+	SoapySDR::ArgInfoList getFrequencyArgsInfo(const int direction, const size_t channel) const {
+		return slave->getFrequencyArgsInfo(direction, channel);
+	}
+
 	double getSampleRate(const int direction, const size_t channel) const {
 		return slave->getSampleRate(direction, channel);
 	}
 
-	std::vector<double> listSampleRates (const int direction, const size_t channel) const {
+	std::vector<double> listSampleRates(const int direction, const size_t channel) const {
 		return slave->listSampleRates(direction, channel);
 	}
 
-	SoapySDR::RangeList getSampleRateRange (const int direction, const size_t channel) const {
+	SoapySDR::RangeList getSampleRateRange(const int direction, const size_t channel) const {
 		return slave->getSampleRateRange(direction, channel);
 	}
 
 	void setBandwidth(const int direction, const size_t channel, const double bw) {
-		cerr << "SetBandwidth(" << direction << "," << channel << "," << bw << ")" << endl;
-		slave->setBandwidth(direction, channel, bw);
+		return slave->setBandwidth(direction, channel, bw);
 	}
 
 	double getBandwidth(const int direction, const size_t channel) const {
@@ -370,9 +413,195 @@ public:
 	std::vector<double> listBandwidths(const int direction, const size_t channel) const {
 		return slave->listBandwidths(direction, channel);
 	}
+
 	SoapySDR::RangeList getBandwidthRange(const int direction, const size_t channel) const {
 		return slave->getBandwidthRange(direction, channel);
 	}
+
+	void setMasterClockRate(const double rate) {
+		return slave->setMasterClockRate(rate);
+	}
+
+	double getMasterClockRate(void) const {
+		return slave->getMasterClockRate();
+	}
+
+	SoapySDR::RangeList getMasterClockRates(void) const {
+		return slave->getMasterClockRates();
+	}
+
+	std::vector<std::string> listClockSources(void) const {
+		return slave->listClockSources();
+	}
+
+	void setClockSource(const std::string & source) {
+		return slave->setClockSource(source);
+	}
+
+	std::string getClockSource(void) const {
+		return slave->getClockSource();
+	}
+
+	std::vector<std::string> listTimeSources(void) const {
+		return slave->listTimeSources();
+	}
+
+	void setTimeSource(const std::string & source) {
+		return slave->setTimeSource(source);
+	}
+
+	std::string getTimeSource(void) const {
+		return slave->getTimeSource();
+	}
+
+	bool hasHardwareTime(const std::string & what) const {
+		return slave->hasHardwareTime(what);
+	}
+
+	long long getHardwareTime(const std::string & what) const {
+		return slave->getHardwareTime(what);
+	}
+
+	void setHardwareTime(const long long timeNs, const std::string & what) {
+		return slave->setHardwareTime(timeNs, what);
+	}
+
+	void setCommandTime(const long long timeNs, const std::string & what) {
+		return slave->setCommandTime(timeNs, what);
+	}
+
+	std::vector<std::string> listSensors(void) const {
+		return slave->listSensors();
+	}
+
+	SoapySDR::ArgInfo getSensorInfo(const std::string & key) const {
+		return slave->getSensorInfo(key);
+	}
+
+	std::string readSensor(const std::string & key) const {
+		return slave->readSensor(key);
+	}
+
+	std::vector<std::string> listSensors(const int direction, const size_t channel) const {
+		return slave->listSensors(direction, channel);
+	}
+
+	SoapySDR::ArgInfo getSensorInfo(const int direction, const size_t channel, const std::string & key) const {
+		return slave->getSensorInfo(direction, channel, key);
+	}
+
+	std::string readSensor(const int direction, const size_t channel, const std::string & key) const {
+		return slave->readSensor(direction, channel, key);
+	}
+
+	std::vector<std::string> listRegisterInterfaces(void) const {
+		return slave->listRegisterInterfaces();
+	}
+
+	void writeRegister(const std::string & name, const unsigned addr, const unsigned value) {
+		return slave->writeRegister(name, addr, value);
+	}
+
+	unsigned readRegister(const std::string & name, const unsigned addr) const {
+		return slave->readRegister(name, addr);
+	}
+
+	void writeRegister(const unsigned addr, const unsigned value) {
+		return slave->writeRegister(addr, value);
+	}
+
+	unsigned readRegister(const unsigned addr) const {
+		return slave->readRegister(addr);
+	}
+
+	void writeRegisters(const std::string & name, const unsigned addr, const std::vector<unsigned> & value) {
+		return slave->writeRegisters(name, addr, value);
+	}
+
+	std::vector<unsigned> readRegisters(const std::string & name, const unsigned addr, const size_t length) const {
+		return slave->readRegisters(name, addr, length);
+	}
+
+	SoapySDR::ArgInfoList getSettingInfo(void) const {
+		return slave->getSettingInfo();
+	}
+
+	void writeSetting(const std::string & key, const std::string & value) {
+		return slave->writeSetting(key, value);
+	}
+
+	std::string readSetting(const std::string & key) const {
+		return slave->readSetting(key);
+	}
+
+	SoapySDR::ArgInfoList getSettingInfo(const int direction, const size_t channel) const {
+		return slave->getSettingInfo(direction, channel);
+	}
+
+	void writeSetting(const int direction, const size_t channel, const std::string & key, const std::string & value) {
+		return slave->writeSetting(direction, channel, key, value);
+	}
+
+	std::string readSetting(const int direction, const size_t channel, const std::string & key) const {
+		return slave->readSetting(direction, channel, key);
+	}
+
+	std::vector<std::string> listGPIOBanks(void) const {
+		return slave->listGPIOBanks();
+	}
+
+	void writeGPIO(const std::string & bank, const unsigned value) {
+		return slave->writeGPIO(bank, value);
+	}
+
+	void writeGPIO(const std::string & bank, const unsigned value, const unsigned mask) {
+		return slave->writeGPIO(bank, value, mask);
+	}
+
+	unsigned readGPIO(const std::string & bank) const {
+		return slave->readGPIO(bank);
+	}
+
+	void writeGPIODir(const std::string & bank, const unsigned dir) {
+		return slave->writeGPIODir(bank, dir);
+	}
+
+	void writeGPIODir(const std::string & bank, const unsigned dir, const unsigned mask) {
+		return slave->writeGPIODir(bank, dir, mask);
+	}
+
+	unsigned readGPIODir(const std::string & bank) const {
+		return slave->readGPIODir(bank);
+	}
+
+	void writeI2C(const int addr, const std::string & data) {
+		return slave->writeI2C(addr, data);
+	}
+
+	std::string readI2C(const int addr, const size_t numBytes) {
+		return slave->readI2C(addr, numBytes);
+	}
+
+	unsigned transactSPI(const int addr, const unsigned data, const size_t numBits) {
+		return slave->transactSPI(addr, data, numBits);
+	}
+
+	std::vector<std::string> listUARTs(void) const {
+		return slave->listUARTs();
+	}
+
+	void writeUART(const std::string & which, const std::string & data) {
+		return slave->writeUART(which, data);
+	}
+
+	std::string readUART(const std::string & which, const long timeoutUs) const {
+		return slave->readUART(which, timeoutUs);
+	}
+
+
+	/*****************************
+	 * End of generated wrappers
+	 *****************************/
 
 private:
 	string shm;
