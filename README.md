@@ -23,6 +23,7 @@ Just like any other C++ software nowadays:
 $ git clone git@github.com:petrinm/SoapyShared.git
 $ cd SoapyShared
 $ mkdir build && cd build
+$ cmake ..
 $ make
 
 $ sudo make install
