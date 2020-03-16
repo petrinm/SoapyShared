@@ -17,8 +17,12 @@ For example when you want to abstract the physical device SDR away from the sign
 
 ## Installation
 
-Just like any other C++ software nowadays:
+Dependencies to be installed with your favorite package manager
+- `libliquid-dev`
+- `libboost-system-dev`
+- `libboost-thread-dev`
 
+Just like any other C++ software nowadays:
 ```
 $ git clone git@github.com:petrinm/SoapyShared.git
 $ cd SoapyShared
@@ -27,8 +31,6 @@ $ cmake ..
 $ make
 
 $ sudo make install
-or
-$ ln -s libSoapyShared.so /usr/lib/x86_64-linux-gnu/SoapySDR/modules0.6
 ```
 
 

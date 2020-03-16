@@ -1,15 +1,7 @@
-#include <unistd.h>
-#include <stdint.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <fcntl.h>
 
-#include <string>
+#include <iostream>
 #include <stdexcept>
 #include <cerrno>
-#include <cstring>
-#include <iostream>
-
 
 #include <SoapySDR/Device.hpp>
 #include <SoapySDR/Registry.hpp>
@@ -18,154 +10,194 @@
 #include "SharedRingBuffer.hpp"
 
 
-using namespace std;
-
-
-/*
- * TODO:
- * - Could be implemented with Boost Shared Memory for cross-platform support but meh...
- */
-
-
-SharedRingBuffer::SharedRingBuffer(std::string name, std::string format, size_t buffer_size):
-	name(name), datasize(0), buffer_size(buffer_size),
-	shm_fd(-1), shm_pointer(NULL), state(NULL), prev(0), created(false)
-{
-
-	size_t shm_size;
-
-	if (buffer_size != 0) {
-
-		// Create new SHM!
-		if ((shm_fd = shm_open(name.c_str(), O_CREAT | O_RDWR, 0644)) < 0)
-			throw runtime_error(string("shm_open: ") + string(strerror(errno)));
-
-		created = true;
-
-		// Create new buffer
-		datasize = SoapySDR::formatToSize(format);
-
-		if (datasize == 0)
-			throw runtime_error("Invalid datasize!");
-
-		// Calculate shared memory sizes
-		shm_size = datasize * buffer_size + sizeof(struct BufferState);
-
-		// Resize SHM!
-		if (ftruncate(shm_fd, shm_size) < 0)
-			throw runtime_error(string("ftruncate: ") + string(strerror(errno)));
-
-	}
-	else {
-
-		// Open SHM!
-		if ((shm_fd = shm_open(name.c_str(), O_CREAT | O_RDWR, 0644)) < 0)
-			throw runtime_error(string("shm_open: ") + string(strerror(errno)));
-
-		// Get size of the allocated memory
-		struct stat shm_stat;
-		if (fstat(shm_fd, &shm_stat) < 0)
-			throw runtime_error(string("fstat: ") + string(strerror(errno)));
-
-		shm_size = shm_stat.st_size;
-
-		if (shm_size == 0)
-			throw runtime_error("SHM is empty!");
-	}
-
-
-	// Memory map it!
-	if ((shm_pointer = mmap(0, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0)) == MAP_FAILED)
-		throw runtime_error(string("mmap: ") + string(strerror(errno)));
-
-	state = static_cast<BufferState*>((void*)shm_pointer + shm_size - sizeof(struct BufferState));
-
-
-	if (buffer_size != 0) {
-		// Init metadata struct
-		state->end = 0;
-		version = state->version = 1;
-		strncpy(state->format, format.c_str(), 5);
-		state->center_frequency = 100.0e6;
-		state->sample_rate = 1e6;
-
-	}
-	else {
-
-		datasize = SoapySDR::formatToSize(state->format);
-		if (datasize == 0 || state->sample_rate == 0)
-			throw runtime_error("Broken SHM!");
-
-		this->buffer_size = (shm_size - sizeof(struct BufferState)) / datasize;
-		version = state->version;
-		prev = state->end;
-	}
-
-
-#if 1
-	cerr << endl;
-	cerr << name << ": (version #" << state->version << ")"  << endl;
-	cerr << "   Format: " << state->format << " (" << datasize << " bytes)" << endl;
-	cerr << "   Center frequency: " << state->center_frequency << endl;
-	cerr << "   Sample rate: " << state->sample_rate << endl;
-	cerr << "   Ring buffer size: 0x" << hex << this->buffer_size << dec << endl;
-	cerr << "   Ring buffer pointer: " << hex << shm_pointer << dec << endl;
-	cerr << "   End: " << state->end << endl;
-	cerr << endl;
+#ifdef SUPPORT_LOOPING
+#if defined(_POSIX_VERSION)
+	#include <unistd.h>
+#elif defined(_WIN32)
+	#include <Windows.h>
+#else
+	#undefine SUPPORT_LOOPING
+#endif
 #endif
 
+using namespace std;
+using namespace boost::interprocess;
+
+
+unique_ptr<SharedRingBuffer> SharedRingBuffer::create(const string& name, boost::interprocess::mode_t mode, string format, size_t buffer_size) {
+
+	unique_ptr<SharedRingBuffer> inst = unique_ptr<SharedRingBuffer>(new SharedRingBuffer(name));
+	size_t page_size = mapped_region::get_page_size();
+
+
+	inst->datasize = SoapySDR::formatToSize(format);
+	if (inst->datasize == 0)
+		throw runtime_error("Invalid datasize!");
+
+	// Create new buffer
+	inst->shm = shared_memory_object(create_only, name.c_str(), mode);
+	inst->created = true;
+	inst->shm.truncate(page_size + inst->datasize * buffer_size);
+	inst->buffer_size = buffer_size;
+
+	// Map and initialize the control struct
+	inst->mapped_ctrl = mapped_region(inst->shm, mode, sizeof(BufferState));
+	memset(inst->mapped_ctrl.get_address(), 0, sizeof(BufferState));
+	inst->ctrl = new (inst->mapped_ctrl.get_address()) BufferState;
+
+	// Initialize control struct
+	strncpy(inst->ctrl->format, format.c_str(), 5);
+	inst->ctrl->center_frequency = 100.0e6;
+	inst->ctrl->sample_rate = 1e6;
+	inst->version = inst->ctrl->version = 1;
+
+	// Map the ring buffer
+	inst->mapBuffer(mode);
+
+	return inst;
+}
+
+
+unique_ptr<SharedRingBuffer> SharedRingBuffer::open(const string& name, boost::interprocess::mode_t mode) {
+
+	unique_ptr<SharedRingBuffer> inst = unique_ptr<SharedRingBuffer>(new SharedRingBuffer(name));
+	size_t page_size = mapped_region::get_page_size();
+
+	// Open shared memory buffer
+	inst->shm = shared_memory_object(open_or_create, name.c_str(), mode);
+	offset_t shm_size;
+	if (!inst->shm.get_size(shm_size) || shm_size == 0)
+		throw runtime_error("SHM empty!");
+
+	// Map the control struct
+	inst->mapped_ctrl = mapped_region(inst->shm, mode, sizeof(BufferState));
+	inst->ctrl = static_cast<BufferState*>(inst->mapped_ctrl.get_address());
+
+	// Parse format information
+	inst->datasize = SoapySDR::formatToSize(inst->ctrl->format);
+	if (inst->datasize == 0 || inst->ctrl->sample_rate == 0)
+		throw runtime_error("Broken SHM!");
+
+	inst->buffer_size = (shm_size - page_size) / inst->datasize;
+	inst->version = inst->ctrl->version;
+	inst->prev = inst->ctrl->end; // sync();
+
+	// Map the ring buffer
+	inst->mapBuffer(mode);
+
+	return inst;
+}
+
+
+SharedRingBuffer::SharedRingBuffer(std::string name):
+	name(name), datasize(0), buffer_size(0), ctrl(NULL), prev(0), created(false)
+{ }
+
+
+void SharedRingBuffer::mapBuffer(boost::interprocess::mode_t mode) {
+
+	size_t sz = datasize * buffer_size;
+	size_t page_size = mapped_region::get_page_size();
+
+#if defined(SUPPORT_LOOPING) && (defined(__linux__) || defined(__APPLE__))
+
+	/*
+	 * POSIX implementation
+	 */
+
+	// Get virtual address space of double size
+	buffer = mmap(NULL, 2 * sz, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (buffer == MAP_FAILED)
+		throw runtime_error("Out of virtual memory");
+
+	int fd = shm.get_mapping_handle().handle;
+	mmap(buffer, sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, page_size);
+	mmap(buffer + sz, sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, page_size);
+	// TODO: Correct access modes
+
+#elif defined(SUPPORT_LOOPING) && defined(_WIN32)
+
+	/*
+	 * Windows implementation
+	 */
+
+	// Make a temperatur virtual memory alloc to see where there's
+	void* virtual_ptr = VirtualAlloc(0, 2 * sz, MEM_RESERVE, PAGE_NOACCESS);
+	if (virtual_ptr == NULL)
+		throw runtime_error("Out of virtual memory");
+	VirtualFree(virtual_ptr, 0, MEM_RELEASE);
+
+	HANDLE hMapFile = shm.get_mapping_handle().handle;
+	baseptr = MapViewOfFileEx(hMapFile, FILE_MAP_ALL_ACCESS, 0, page_size, sz, virtual_ptr);
+	MapViewOfFileEx(mapping, FILE_MAP_ALL_ACCESS, 0, 0, page_size + sz, virtual_ptr + sz);
+	// TODO: Correct access modes
+
+	cerr << "Org " << hex << virtual_ptr << "   " << baseptr << dec << endl;
+	if (virtual_ptr != baseptr)
+		throw runtime_error("Fuck");
+
+#else
+	/*
+	 * No looping just direct mapping using Boost
+	 */
+	mapped_data = mapped_region(shm, mode, sz);
+	buffer = mapped_data.get_address();
+#endif
 }
 
 
 bool SharedRingBuffer::checkSHM(std::string name) {
-	int fd = shm_open(name.c_str(), O_RDONLY, 0644);
-	if (fd > 0) close(fd);
-	return fd > 0;
+	try {
+		boost::interprocess::shared_memory_object(open_only, name.c_str(), read_only);
+		return true;
+	}
+	catch(...) {
+		return false;
+	}
 }
 
 
 SharedRingBuffer::~SharedRingBuffer() {
+	// Unmap the manually mapped regions
+	// Boost's SHM and mappings' done with it destroyes themselves automatically
+#if defined(SUPPORT_LOOPING) && (defined(__linux__) || defined(__APPLE__))
+	size_t sz = datasize * buffer_size;
+	munmap(buffer, 2 * sz);
+#elif defined(SUPPORT_LOOPING) && defined(_WIN32)
+	UnmapViewOfFile(buffer);
+	UnmapViewOfFile(buffer + sz);
+#endif
 
-	// Close the shared memory buffer
-	if (shm_fd > 0) {
-		close(shm_fd);
-		shm_fd = -1;
-	}
-
-	// Destroy the SHM only if we created it!
 	if (created)
-		shm_unlink(name.c_str());
-
-	// Unmap shared memory
-	if (shm_pointer) {
-		munmap(shm_pointer, buffer_size + sizeof(struct BufferState));
-		shm_pointer = NULL;
-		state = NULL;
-	}
-
+		shared_memory_object::remove(name.c_str());
 }
 
 
 void SharedRingBuffer::sync() {
-	prev = state->end;
+	prev = ctrl->end;
 }
 
 size_t SharedRingBuffer::getSamplesAvailable() {
-	return (state->end < prev) ? (buffer_size - prev) : (state->end - prev);
+	return (ctrl->end < prev) ? (buffer_size - prev) : (ctrl->end - prev);
 }
 
 size_t SharedRingBuffer::getSamplesLeft() {
-	return (buffer_size - state->end);
+	return (buffer_size - ctrl->end);
 }
 
 
 size_t SharedRingBuffer::read(size_t maxElems) {
 
 	size_t samples_available;
-	size_t nextp = state->end;
+	size_t nextp = ctrl->end;
 
-	if (nextp < prev) {// Has the buffer wrapped around?
+	if (nextp < prev) { // Has the buffer wrapped around?
+#ifdef SUPPORT_LOOPING
+		samples_available = (buffer_size - prev) + nextp;
+#else
 		samples_available = buffer_size - prev;
+#endif
+
 		//cerr << "a " << (samples_available + nextp) << "  "  << (buffer_size / 2) << endl;
 		if (samples_available + nextp > buffer_size / 2)
 			cerr << "U";
@@ -200,40 +232,58 @@ size_t SharedRingBuffer::read(size_t maxElems) {
 
 
 void SharedRingBuffer::moveEnd(size_t numItems) {
-	size_t new_pos = state->end + numItems;
+	size_t new_pos = ctrl->end + numItems;
 	if (new_pos >= buffer_size) new_pos = 0;
-	//cerr << "end = " << state->end << "; new_pos = " << new_pos << endl;
-	state->end = new_pos;
+	//cerr << "end = " << ctrl->end << "; new_pos = " << new_pos << endl;
+	ctrl->end = new_pos;
 }
 
 std::string SharedRingBuffer::getFormat() const {
-	return state ? state->format :  "-";
+	return (ctrl != NULL) ? ctrl->format :  "-";
 }
 
 bool SharedRingBuffer::settingsChanged() {
-	if (state) {
+	if (ctrl) {
 		size_t prev = version;
-		version = state->version;
-		return (prev != state->version);
+		version = ctrl->version;
+		return (prev != ctrl->version);
 	}
 	return false;
 }
 
 void SharedRingBuffer::setCenterFrequency(double frequency) {
-	state->center_frequency = frequency;
-	state->version++;
+	assert(ctrl != NULL);
+	ctrl->center_frequency = frequency;
+	ctrl->version++;
 }
 
 void SharedRingBuffer::setSampleRate(double rate) {
-	state->sample_rate = rate;
-	state->version++;
+	assert(ctrl != NULL);
+	ctrl->sample_rate = rate;
+	ctrl->version++;
 }
 
 void SharedRingBuffer::acquireWriteLock() {
-	/* TODO */
+	assert(ctrl != NULL);
+	ctrl->mutex.lock();
 }
 
 void SharedRingBuffer::releaseWriteLock() {
-	/* TODO */
-	// Make sure we had the lock!
+	ctrl->mutex.unlock();
+}
+
+
+std::ostream& operator<<(std::ostream& stream, const SharedRingBuffer& buf) {
+	assert(buf.ctrl != NULL);
+	stream << endl;
+	stream << buf.name << ": (version #" << buf.ctrl->version << ")"  << endl;
+	stream << "   Format: " << buf.ctrl->format << " (" << buf.datasize << " bytes)" << endl;
+	stream << "   Center frequency: " << buf.ctrl->center_frequency << endl;
+	stream << "   Sample rate: " << buf.ctrl->sample_rate << endl;
+	stream << "   Ring buffer size: " << hex << buf.buffer_size << dec << endl;
+	stream << "   Ring buffer pointer: " << hex << (size_t)buf.buffer << dec << endl;
+	stream << "   End: " << hex << (size_t)buf.ctrl->end << endl;
+	stream << endl;
+
+	return stream;
 }

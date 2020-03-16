@@ -10,8 +10,8 @@
 #include <algorithm> // min
 #include <memory> // unique_ptr
 #include <cstring> // memcpy
-#include <pthread.h>
-#include <unistd.h>
+
+#include <boost/thread.hpp>
 
 using namespace std;
 
@@ -60,7 +60,7 @@ public:
 
 		if (args.find("tx") != args.end()) {
 			// Create TX buffer/thread also so leechers can transmit
-			pthread_create(&tx_thread, NULL, txing, (void *)slave.get());
+			tx_thread = boost::thread(txing, (void *)slave.get());
 		}
 
 	}
@@ -84,13 +84,13 @@ public:
 
 	virtual SoapySDR::Stream* setupStream (const int direction, const std::string &format,
 		const std::vector<size_t> &channels = std::vector<size_t>(),
-		const SoapySDR::Kwargs &args=SoapySDR::Kwargs())
+		const SoapySDR::Kwargs &args = SoapySDR::Kwargs())
 	{
 		cerr << "setupStream(" << direction << ", " << format << ")" << endl;
 
 		if (direction == SOAPY_SDR_RX) {
 
-			rx_buffer = unique_ptr<SharedRingBuffer>(new SharedRingBuffer(shm, format, bufsize));
+			rx_buffer = SharedRingBuffer::create(shm, boost::interprocess::read_write, format, bufsize);
 
 			rx_buffer->sync();
 			rx_buffer->setCenterFrequency(slave->getFrequency(SOAPY_SDR_RX, 0));
@@ -612,7 +612,7 @@ private:
 
 	size_t bufsize;
 	int tx_activated;
-	pthread_t tx_thread;
+	boost::thread tx_thread;
 };
 
 
@@ -627,7 +627,7 @@ void* txing(void* p) {
 	size_t tx_buffer_size = 0x1000000; // 16 MSamples
 
 	// TODO: Hardcoded SHM name!
-	unique_ptr<SharedRingBuffer>tx_buffer(new SharedRingBuffer("soapy_tx", tx_format, tx_buffer_size));
+	unique_ptr<SharedRingBuffer>tx_buffer = SharedRingBuffer::create("soapy_tx", boost::interprocess::read_write, tx_format, tx_buffer_size);
 
 
 	// Setup the tx stream ready on the slave devices

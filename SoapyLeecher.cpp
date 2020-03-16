@@ -38,10 +38,10 @@ public:
 			shm = i->second;
 
 		// Open shared memory buffer
-		rx_buffer = unique_ptr<SharedRingBuffer>(new SharedRingBuffer(shm));
+		rx_buffer = SharedRingBuffer::open(shm, boost::interprocess::read_only);
 
 		if (SharedRingBuffer::checkSHM(shm + "_tx"))
-			tx_buffer = unique_ptr<SharedRingBuffer>(new SharedRingBuffer(shm + "_tx"));
+			tx_buffer = SharedRingBuffer::open(shm + "_tx", boost::interprocess::read_write);
 
 		// IIR for decimation
 		iir = iirfilt_crcf_create_lowpass(7, 0.4);

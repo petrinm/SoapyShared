@@ -18,11 +18,15 @@ set(CMAKE_BUILD_TYPE ${CMAKE_BUILD_TYPE} CACHE STRING "")
 # Header and library resources needed to communicate with the device.
 # These may be found within the build tree or in an external project.
 ########################################################################
-#set(SOAPY_SHARED_INCLUDE_DIRS ...)
-set (SOAPY_SHARED_LIBRARIES rt liquid pthread)
-set (CMAKE_CXX_STANDARD 14)
+set (SOAPY_SHARED_LIBRARIES rt liquid boost_system boost_thread pthread)
 set (CMAKE_CXX_FLAGS "-Wno-pointer-arith -Wno-unused-parameter") # Silence pointer arithmetic warnings
 
+
+########################################################################
+# Find boost
+########################################################################
+find_package(Boost REQUIRED COMPONENTS system thread)
+INCLUDE_DIRECTORIES( ${Boost_INCLUDE_DIR} )
 
 ########################################################################
 # build the module
@@ -30,7 +34,7 @@ set (CMAKE_CXX_FLAGS "-Wno-pointer-arith -Wno-unused-parameter") # Silence point
 find_package(SoapySDR CONFIG)
 
 if (NOT SoapySDR_FOUND)
-    message(WARNING "SoapySDR development files not found - skipping support")
+    message(WARNING "SoapySDR development files not found! Cannot compile!")
     return()
 endif ()
 

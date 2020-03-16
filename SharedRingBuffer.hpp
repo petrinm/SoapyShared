@@ -5,20 +5,26 @@
 #include <memory>
 #include <iostream>
 
+#include <boost/interprocess/shared_memory_object.hpp>
+#include <boost/interprocess/mapped_region.hpp>
+#include <boost/interprocess/sync/interprocess_mutex.hpp>
+#include <boost/interprocess/sync/interprocess_condition.hpp>
 
-
-
+/*
+ * Control structure which lives in the beginning of the SHM
+ */
 struct BufferState {
 
 	size_t end; // Current position on the stream
 
 	// Metadata for streamed data
 	unsigned int version;			// Revision number of these settings
-	char format[5]; 			// Data format string
+	char format[6]; 			// Data format string
 	double center_frequency;	// Center frequency
 	double sample_rate;			// Sample rate of the stream
 
-	//int write_lock; // TODO
+	boost::interprocess::interprocess_mutex mutex;
+	boost::interprocess::interprocess_condition new_data;
 };
 
 
@@ -32,12 +38,15 @@ class SharedRingBuffer
 		 */
 		static bool checkSHM(std::string name);
 
+		/*
+		 * Create a new shared memory buffer
+		 */
+		static std::unique_ptr<SharedRingBuffer> create(const std::string& name, boost::interprocess::mode_t mode, std::string format=std::string(), size_t buffer_size=0);
 
 		/*
-		 * Create new instances using openForWriting and openForReading functions.
-		 * If format and buffer_size are given the buffer will be initialized!
+		 * Open a shared memory buffer
 		 */
-		SharedRingBuffer(std::string name, std::string format=std::string(), size_t buffer_size=0);
+		static std::unique_ptr<SharedRingBuffer> open(const std::string& name, boost::interprocess::mode_t mode);
 
 
 		/*
@@ -69,11 +78,11 @@ class SharedRingBuffer
 		 * Return pointer to current read/write position
 		 */
 		template<typename T> T* getWritePointer() {
-			return static_cast<T*>(shm_pointer + datasize * state->end);
+			return static_cast<T*>(buffer + datasize * ctrl->end);
 		}
 
 		template<typename T> T* getReadPointer() {
-			return static_cast<T*>(shm_pointer + datasize * prev);
+			return static_cast<T*>(buffer + datasize * prev);
 		}
 
 		/*
@@ -109,7 +118,10 @@ class SharedRingBuffer
 		/*
 		 * Return center frequency
 		 */
-		double getCenterFrequency() const { return state->center_frequency; }
+		double getCenterFrequency() const {
+			assert(ctrl != NULL);
+			return ctrl->center_frequency;
+		}
 
 		/*
 		 * Return center frequency
@@ -119,7 +131,10 @@ class SharedRingBuffer
 		/*
 		 * Return center frequency
 		 */
-		double getSampleRate() const { return state->sample_rate; }
+		double getSampleRate() const {
+			assert(ctrl != NULL);
+			return ctrl->sample_rate;
+		}
 
 		/*
 		 * Try to acquire the write lock for writing to the buffer
@@ -131,15 +146,37 @@ class SharedRingBuffer
 		 */
 		void releaseWriteLock();
 
+		boost::interprocess::interprocess_mutex& mutex() {
+			assert(ctrl != NULL);
+			return ctrl->mutex;
+		}
+
+		/*
+		 * Stream opetator to print the buffer description
+		 */
+		friend std::ostream& operator<<(std::ostream& stream, const SharedRingBuffer& buf);
+
 	private:
 
-		int mode; // Read or write?
+		/*
+		 * This contructor is private!
+		 * SharedRingBuffer::open() and SharedRingBuffer::create() should be used
+		 */
+		SharedRingBuffer(std::string name);
+
+		void mapBuffer(boost::interprocess::mode_t mode);
+
+		//SharedRingBuffer(SharedRingBuffer && moved) { }
+		//SharedRingBuffer& operator=(SharedRingBuffer && moved) { }
+
 		std::string name;
 		size_t datasize, buffer_size;
 
-		int shm_fd;
-		void* shm_pointer;
-		BufferState* state;
+		boost::interprocess::shared_memory_object shm;
+		boost::interprocess::mapped_region mapped_ctrl, mapped_data;
+
+		BufferState* ctrl;
+		void* buffer;
 
 		size_t prev, version;
 		bool created;
