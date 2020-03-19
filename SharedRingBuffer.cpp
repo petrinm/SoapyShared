@@ -9,6 +9,8 @@
 
 #include "SharedRingBuffer.hpp"
 
+#include <boost/interprocess/sync/scoped_lock.hpp>
+
 
 #ifdef SUPPORT_LOOPING
 #if defined(_POSIX_VERSION)
@@ -22,6 +24,7 @@
 
 using namespace std;
 using namespace boost::interprocess;
+using namespace boost::posix_time;
 
 
 unique_ptr<SharedRingBuffer> SharedRingBuffer::create(const string& name, boost::interprocess::mode_t mode, string format, size_t buffer_size) {
@@ -41,9 +44,9 @@ unique_ptr<SharedRingBuffer> SharedRingBuffer::create(const string& name, boost:
 	inst->buffer_size = buffer_size;
 
 	// Map and initialize the control struct
-	inst->mapped_ctrl = mapped_region(inst->shm, mode, sizeof(BufferState));
-	memset(inst->mapped_ctrl.get_address(), 0, sizeof(BufferState));
-	inst->ctrl = new (inst->mapped_ctrl.get_address()) BufferState;
+	inst->mapped_ctrl = mapped_region(inst->shm, mode, sizeof(BufferControl));
+	memset(inst->mapped_ctrl.get_address(), 0, sizeof(BufferControl));
+	inst->ctrl = new (inst->mapped_ctrl.get_address()) BufferControl;
 
 	// Initialize control struct
 	strncpy(inst->ctrl->format, format.c_str(), 5);
@@ -54,6 +57,7 @@ unique_ptr<SharedRingBuffer> SharedRingBuffer::create(const string& name, boost:
 	// Map the ring buffer
 	inst->mapBuffer(mode);
 
+	inst->ctrl->state = BufferState::Ready;
 	return inst;
 }
 
@@ -70,8 +74,11 @@ unique_ptr<SharedRingBuffer> SharedRingBuffer::open(const string& name, boost::i
 		throw runtime_error("SHM empty!");
 
 	// Map the control struct
-	inst->mapped_ctrl = mapped_region(inst->shm, mode, sizeof(BufferState));
-	inst->ctrl = static_cast<BufferState*>(inst->mapped_ctrl.get_address());
+	inst->mapped_ctrl = mapped_region(inst->shm, mode, sizeof(BufferControl));
+	inst->ctrl = static_cast<BufferControl*>(inst->mapped_ctrl.get_address());
+
+	if (inst->ctrl->state == BufferState::Uninitalized)
+		throw(runtime_error("Uninitalized buffer!"));
 
 	// Parse format information
 	inst->datasize = SoapySDR::formatToSize(inst->ctrl->format);
@@ -90,7 +97,8 @@ unique_ptr<SharedRingBuffer> SharedRingBuffer::open(const string& name, boost::i
 
 
 SharedRingBuffer::SharedRingBuffer(std::string name):
-	name(name), datasize(0), buffer_size(0), ctrl(NULL), prev(0), created(false)
+	name(name), datasize(0), buffer_size(0), ctrl(NULL), prev(0),
+	created(false)
 { }
 
 
@@ -114,6 +122,10 @@ void SharedRingBuffer::mapBuffer(boost::interprocess::mode_t mode) {
 	mmap(buffer, sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, page_size);
 	mmap(buffer + sz, sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, page_size);
 	// TODO: Correct access modes
+
+	// Maybe:
+	// mapped_data = mapped_region(shm, mode, page_size, sz, buffer);
+	// mapped_data_loop = mapped_region(shm, mode, page_size, sz, &buffer[sz]);
 
 #elif defined(SUPPORT_LOOPING) && defined(_WIN32)
 
@@ -140,7 +152,7 @@ void SharedRingBuffer::mapBuffer(boost::interprocess::mode_t mode) {
 	/*
 	 * No looping just direct mapping using Boost
 	 */
-	mapped_data = mapped_region(shm, mode, sz);
+	mapped_data = mapped_region(shm, mode, page_size, sz);
 	buffer = mapped_data.get_address();
 #endif
 }
@@ -236,6 +248,7 @@ void SharedRingBuffer::moveEnd(size_t numItems) {
 	if (new_pos >= buffer_size) new_pos = 0;
 	//cerr << "end = " << ctrl->end << "; new_pos = " << new_pos << endl;
 	ctrl->end = new_pos;
+	ctrl->cond_new_data.notify_all();
 }
 
 std::string SharedRingBuffer::getFormat() const {
@@ -265,11 +278,24 @@ void SharedRingBuffer::setSampleRate(double rate) {
 
 void SharedRingBuffer::acquireWriteLock() {
 	assert(ctrl != NULL);
-	ctrl->mutex.lock();
+	ctrl->write_mutex.lock();
 }
 
 void SharedRingBuffer::releaseWriteLock() {
-	ctrl->mutex.unlock();
+	ctrl->write_mutex.unlock();
+}
+
+void SharedRingBuffer::wait(unsigned int timeoutUs) {
+	assert(ctrl != NULL);
+	ptime abs_timeout = boost::get_system_time() + microseconds(timeoutUs);
+	boost::interprocess::scoped_lock<interprocess_mutex> data_lock(ctrl->data_mutex, abs_timeout);
+	ctrl->cond_new_data.timed_wait(data_lock, abs_timeout);
+}
+
+void SharedRingBuffer::wait(const boost::posix_time::ptime& abs_timeout) {
+	assert(ctrl != NULL);
+	boost::interprocess::scoped_lock<interprocess_mutex> data_lock(ctrl->data_mutex, abs_timeout);
+	ctrl->cond_new_data.timed_wait(data_lock, abs_timeout);
 }
 
 
@@ -277,6 +303,7 @@ std::ostream& operator<<(std::ostream& stream, const SharedRingBuffer& buf) {
 	assert(buf.ctrl != NULL);
 	stream << endl;
 	stream << buf.name << ": (version #" << buf.ctrl->version << ")"  << endl;
+	//stream << "state" << endl;
 	stream << "   Format: " << buf.ctrl->format << " (" << buf.datasize << " bytes)" << endl;
 	stream << "   Center frequency: " << buf.ctrl->center_frequency << endl;
 	stream << "   Sample rate: " << buf.ctrl->sample_rate << endl;

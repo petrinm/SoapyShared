@@ -5,15 +5,29 @@
 #include <memory>
 #include <iostream>
 
+#include <boost/thread/thread_time.hpp>
+#include <boost/date_time/posix_time/posix_time.hpp>
+
 #include <boost/interprocess/shared_memory_object.hpp>
 #include <boost/interprocess/mapped_region.hpp>
 #include <boost/interprocess/sync/interprocess_mutex.hpp>
 #include <boost/interprocess/sync/interprocess_condition.hpp>
 
 /*
+ *
+ */
+enum BufferState {
+	Uninitalized = 0,
+	Ready,
+	Streaming,
+	EndOfBurst,
+};
+
+
+/*
  * Control structure which lives in the beginning of the SHM
  */
-struct BufferState {
+struct BufferControl {
 
 	size_t end; // Current position on the stream
 
@@ -22,9 +36,12 @@ struct BufferState {
 	char format[6]; 			// Data format string
 	double center_frequency;	// Center frequency
 	double sample_rate;			// Sample rate of the stream
+	enum BufferState state;
 
-	boost::interprocess::interprocess_mutex mutex;
-	boost::interprocess::interprocess_condition new_data;
+	boost::interprocess::interprocess_mutex write_mutex;
+
+	boost::interprocess::interprocess_mutex data_mutex;
+	boost::interprocess::interprocess_condition cond_new_data;
 };
 
 
@@ -146,10 +163,19 @@ class SharedRingBuffer
 		 */
 		void releaseWriteLock();
 
-		boost::interprocess::interprocess_mutex& mutex() {
+		/*
+		 *
+		 */
+		boost::interprocess::interprocess_mutex& write_mutex() {
 			assert(ctrl != NULL);
-			return ctrl->mutex;
+			return ctrl->write_mutex;
 		}
+
+		/*
+		 * Wait for new data
+		 */
+		void wait(unsigned int timeoutUs);
+		void wait(const boost::posix_time::ptime& abs_timeout);
 
 		/*
 		 * Stream opetator to print the buffer description
@@ -175,7 +201,7 @@ class SharedRingBuffer
 		boost::interprocess::shared_memory_object shm;
 		boost::interprocess::mapped_region mapped_ctrl, mapped_data;
 
-		BufferState* ctrl;
+		BufferControl* ctrl;
 		void* buffer;
 
 		size_t prev, version;

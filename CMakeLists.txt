@@ -21,6 +21,7 @@ set(CMAKE_BUILD_TYPE ${CMAKE_BUILD_TYPE} CACHE STRING "")
 set (SOAPY_SHARED_LIBRARIES rt liquid boost_system boost_thread pthread)
 set (CMAKE_CXX_FLAGS "-Wno-pointer-arith -Wno-unused-parameter") # Silence pointer arithmetic warnings
 
+add_definitions(-DSUPPORT_LOOPING)
 
 ########################################################################
 # Find boost

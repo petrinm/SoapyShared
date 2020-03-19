@@ -15,7 +15,7 @@
 
 using namespace std;
 
-void* txing(void* p);
+void* transmitter_thread(void* p);
 
 /***********************************************************************
  * Device interface
@@ -26,7 +26,7 @@ public:
 	// Implement constructor with device specific arguments...
 	SoapySeeder(const SoapySDR::Kwargs &args) :
 		shm("/soapy"), rx(NULL), tx(NULL), bufsize(0x4000000), // 64 MSamples
-		tx_activated(0)
+		tx_activated(0), auto_tx(false)
 	{
 
 		// Parse slave arguments
@@ -58,9 +58,10 @@ public:
 		if (slave.get() == NULL)
 			throw runtime_error("No slave device found!");
 
-		if (args.find("tx") != args.end()) {
+		if (args.find("auto_tx") != args.end()) {
+			auto_tx = true;
 			// Create TX buffer/thread also so leechers can transmit
-			tx_thread = boost::thread(txing, (void *)slave.get());
+			tx_thread = boost::thread(transmitter_thread, (void *)slave.get());
 		}
 
 	}
@@ -75,7 +76,7 @@ public:
 	}
 
 	bool getFullDuplex(const int direction, const size_t channel) const {
-		return false;
+		return true;
 	}
 
 	std::vector<std::string> getStreamFormats(const int direction, const size_t channel) const {
@@ -101,24 +102,36 @@ public:
 			return rx;
 		}
 		else if (direction == SOAPY_SDR_TX) {
-			throw runtime_error("Not possible!");
-			return slave->setupStream(direction, format, channels, args);
+			//if (tx_thread) {
+				throw runtime_error("Not possible!");
+			//}
+			tx = slave->setupStream(direction, format, channels, args);
+			return tx;
 		}
 
 		return NULL;
 	}
 
-	void closeStream (SoapySDR::Stream *stream) {
-		slave->closeStream(stream);
+	void closeStream(SoapySDR::Stream *stream) {
 		cerr << "closeStream" << endl;
 		if (stream == rx) {
+			slave->closeStream(stream);
 			rx_buffer.release();
+		}
+		else if (stream == tx) {
+			slave->closeStream(stream);
 		}
 	}
 
 
 	int activateStream(SoapySDR::Stream *stream, const int flags=0, const long long timeNs=0, const size_t numElems=0) {
 		cerr << "activateStream(" << flags << ", " << timeNs << ", " << numElems << ")" << endl;
+		if (stream == rx) {
+			rx_buffer->acquireWriteLock();
+		}
+		else if (stream == tx) {
+
+		}
 		return slave->activateStream(stream, flags, timeNs, numElems);
 	}
 
@@ -208,7 +221,7 @@ public:
 		return slave->releaseWriteBuffer(stream, handle, numElems, flags, timeNs);
 	}
 
-	void setFrequency (const int direction, const size_t channel, const double frequency, const SoapySDR::Kwargs &args=SoapySDR::Kwargs()) {
+	void setFrequency(const int direction, const size_t channel, const double frequency, const SoapySDR::Kwargs &args=SoapySDR::Kwargs()) {
 		cerr << "setFrequency(" << direction << "," << channel << "," << frequency << ")" << endl;
 		slave->setFrequency(direction, channel, frequency, args);
 		if (direction == SOAPY_SDR_RX && rx_buffer)
@@ -612,11 +625,22 @@ private:
 
 	size_t bufsize;
 	int tx_activated;
+	bool auto_tx;
 	boost::thread tx_thread;
 };
 
 
-void* txing(void* p) {
+struct TransmitThreadDescription {
+	SoapySDR::Device* slave;
+	char format[6];
+	size_t buffer_size;
+};
+
+// TODO:
+
+void* transmitter_thread(void* p) {
+	//TransmitThreadDescription* desc = static_cast<TransmitThreadDescription*>(p);
+	//SoapySDR::Device* slave = desc->slave;
 
 	SoapySDR::Device* slave = static_cast<SoapySDR::Device*>(p);
 
