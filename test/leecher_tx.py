@@ -23,9 +23,14 @@ try:
 
     print("Transmitting...")
 
-    # Transmit the test signal 10 times
-    for i in range(10):
-        sdr.writeStream(txStream, [txsignal], len(txsignal))
+    while True:
+
+        # Transmit the test signal 4 times
+        for i in range(4):
+            sdr.writeStream(txStream, [txsignal], len(txsignal), SOAPY_SDR_END_BURST if i == 3 else 0)
+            time.sleep(0.001)
+
+        time.sleep(0.5)
 
 except:
     # Shutdown the stream
