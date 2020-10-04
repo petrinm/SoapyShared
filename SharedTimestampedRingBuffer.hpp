@@ -214,8 +214,9 @@ class SharedTimestampedRingBuffer
 		 * Return the number of channels
 		 */
 		size_t getNumChannels() const {
+			return 1; // TODO: Assert fails because the function is called before the stream is opened!
 			assert(ctrl != NULL);
-			return 1; // TODO: return ctrl->n_channels;
+			return ctrl->n_channels;
 		}
 
 		/*
@@ -250,6 +251,14 @@ class SharedTimestampedRingBuffer
 	private:
 
 		/*
+		 */
+		const BlockMetadata getMetadata(size_t block) const {
+			assert(ctrl != NULL);
+			assert(block <= ctrl->n_blocks);
+			return ctrl->meta[block];
+		}
+
+		/*
 		 * This contructor is private!
 		 * SharedTimestampedRingBuffer::open() and SharedTimestampedRingBuffer::create() should be used
 		 */
@@ -264,6 +273,7 @@ class SharedTimestampedRingBuffer
 		size_t datasize;
 		size_t buffer_size;
 		size_t block_size;
+		size_t n_blocks;
 
 		boost::interprocess::shared_memory_object shm;
 		boost::interprocess::mapped_region mapped_ctrl, mapped_data;

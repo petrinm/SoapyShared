@@ -1,5 +1,6 @@
 #include <SoapySDR/Device.hpp>
 #include <SoapySDR/Registry.hpp>
+#include <SoapySDR/ConverterRegistry.hpp>
 
 #include "SharedTimestampedRingBuffer.hpp"
 
@@ -25,7 +26,8 @@ class SoapySeeder: public SoapySDR::Device
 public:
 	// Implement constructor with device specific arguments...
 	SoapySeeder(const SoapySDR::Kwargs &args) :
-		shm("/soapy"), rx(NULL), tx(NULL), bufsize(0x4000000), // 64 MSamples
+		shm("/soapy"), converter(NULL), rx(NULL), tx(NULL),
+		block_size(0x1000), n_blocks(16 * 1024),
 		tx_activated(0), auto_tx(false)
 	{
 
@@ -37,27 +39,47 @@ public:
 		}
 
 		if (slaveArgs.size() == 0)
-			throw runtime_error("No slave args!");
+			throw runtime_error("No slave args given! Define at least driver=");
+
+
+		SoapySDR::Kwargs::const_iterator i;
 
 		// Try to parse shared memory buffer name
-		auto i = args.find("shm");
-		if (i != args.end())
+		if ((i = args.find("shm")) != args.end())
 			shm = i->second;
+		else {
+			// Try to make "unique" SHM name using different arguments
+			if ((i = slaveArgs.find("driver")) != slaveArgs.end())
+				shm += "_" + i->second;
+			if ((i = slaveArgs.find("serial")) != slaveArgs.end())
+				shm += "_" + i->second;
+			if ((i = slaveArgs.find("soapy")) != slaveArgs.end())
+				shm += "_" + i->second;
+		}
 
+		// Try to parse block_size
+		if ((i = args.find("block_size")) != args.end())
+			block_size = stol(i->second);
+		if (block_size & 0xFF)
+			cerr << "Warning: block size is not multiple of 256! " << endl;
 
-		// Try to parse buffer_size
-		i = args.find("buffer_size");
-		if (i != args.end())
-			bufsize = stol(i->second);
+		// Try to parse n_blocks
+		if ((i = args.find("n_blocks")) != args.end())
+			n_blocks = stol(i->second);
 
-		bufsize &= ~0xF; // Ensure nice alignment in every case
-
+		// If buffer_size given use it to define number of blocks
+		if ((i = args.find("buffer_size")) != args.end())
+			n_blocks = stol(i->second) / block_size;
 
 		// Open slave device
 		slave = unique_ptr<SoapySDR::Device>(SoapySDR::Device::make(slaveArgs));
 		if (slave.get() == NULL)
 			throw runtime_error("No slave device found!");
 
+		if (slave->getDriverKey() == getDriverKey())
+			throw runtime_error("Slave device is SoapySharedSeeder! Recursion not allowed!");
+
+		// Start auto transmission
 		if (args.find("auto_tx") != args.end()) {
 			auto_tx = true;
 			// Create TX buffer/thread also so leechers can transmit
@@ -95,14 +117,29 @@ public:
 
 		if (direction == SOAPY_SDR_RX) {
 
-			rx_buffer = SharedTimestampedRingBuffer::create(shm, boost::interprocess::read_write, format, bufsize);
+			rx_buffer = SharedTimestampedRingBuffer::create(shm, boost::interprocess::read_write, format, n_blocks, block_size);
 
 			rx_buffer->sync();
 			rx_buffer->setCenterFrequency(slave->getFrequency(SOAPY_SDR_RX, 0));
 			rx_buffer->setSampleRate(slave->getSampleRate(SOAPY_SDR_RX, 0));
 
+#if 0
+			if (format != "CF32") {
+				cout << "Warning: format not CF32" << endl;
+
+				double fullScale;
+				std::string native_format = slave->getNativeStreamFormat(direction, channel, fullScale);
+
+				double converter_scale = 1.0 / fullScale;
+				converter = SoapySDR::ConverterRegistry::getFunction(native_format, "CF32");
+
+				// Usage:
+				//converter(input, output, numElems, converter_scale);
+			}
+#endif
 			// Setup the slace device
 			rx = slave->setupStream(direction, format, channels, args);
+			cout << "ccc";
 			return rx;
 		}
 		else if (direction == SOAPY_SDR_TX) {
@@ -170,7 +207,9 @@ public:
 			if (ret <= 0)
 				return ret;
 
-#if 0
+			//if (numElemnt % block_size != 0) {}
+
+#if DEBUG
 			cerr << hex << *shmbuffs << dec << endl;
 			cerr << "numElems = " << numElems << "; readElems = " << readElems << endl;
 			cerr << "ret = " << ret << endl;
@@ -625,110 +664,18 @@ private:
 
 	unique_ptr<SharedTimestampedRingBuffer> rx_buffer, tx_buffer;
 	unique_ptr<SoapySDR::Device> slave;
+
+	SoapySDR::ConverterRegistry::ConverterFunction converter;
+
 	SoapySDR::Stream* rx, *tx; // Slave device stream handles
 
-	size_t bufsize;
+	size_t block_size, n_blocks;
 	int tx_activated;
 	bool auto_tx;
 	boost::thread tx_thread;
 };
 
-
-struct TransmitThreadDescription {
-	SoapySDR::Device* slave;
-	char format[6];
-	size_t buffer_size;
-};
-
-// TODO:
-
-void* transmitter_thread(void* p) {
-	//TransmitThreadDescription* desc = static_cast<TransmitThreadDescription*>(p);
-	//SoapySDR::Device* slave = desc->slave;
-
-	SoapySDR::Device* slave = static_cast<SoapySDR::Device*>(p);
-
-	usleep(1000000); // Delay the startup a bit so life is a bit better!
-
-
-	string tx_format = "CF32";
-	size_t tx_buffer_size = 0x1000000; // 16 MSamples
-
-	// TODO: Hardcoded SHM name!
-	unique_ptr<SharedTimestampedRingBuffer>tx_buffer = SharedTimestampedRingBuffer::create("soapy_tx", boost::interprocess::read_write, tx_format, tx_buffer_size);
-
-
-	// Setup the tx stream ready on the slave devices
-	SoapySDR::Stream* tx = slave->setupStream(SOAPY_SDR_TX, tx_format /*, channels, args*/);
-
-
-	int tx_activated = 0;
-
-	cerr << "TX thread running..." << endl;
-	while (1) {
-
-		// Update transmission settings
-		if (tx_buffer->settingsChanged()) {
-			cerr << "New TX settings!" << endl;
-			slave->setFrequency(SOAPY_SDR_TX, 0, tx_buffer->getCenterFrequency());
-			slave->setSampleRate(SOAPY_SDR_TX, 0, tx_buffer->getSampleRate());
-		}
-
-		if (tx_buffer->getSamplesAvailable()) {
-
-			// Activate TX stream if needed
-			if (tx_activated == 0) {
-				cerr << "Activating TX!" << endl;
-				slave->activateStream(tx, /* flags = */ 0, /* timeNs = */ 0, /*numElems = */ 0);
-			}
-
-			tx_activated = 1;
-
-			void* shmbuffs[] = {
-				tx_buffer->getReadPointer<void>()
-			};
-
-			long long timestamp;
-			size_t readElems = tx_buffer->read(64 * 1024, timestamp);
-
-			// Read the real stream
-			int flags;
-			if (slave->writeStream(tx, shmbuffs, readElems, flags /*, const long long timeNs=0, const long timeoutUs=100000*/) < 0)
-				throw runtime_error("Write failed!");
-
-			if (flags)
-				cerr << "flags: " << flags << endl;
-
-		}
-		else if (tx_activated > 0) {
-
-			//
-			size_t channelMask = 0;
-			int flags = 0;
-			long long timeNs = 0;
-
-			// Check if TX-buffer underflow has occured
-			if (slave->readStreamStatus(tx, channelMask, flags, timeNs) == SOAPY_SDR_UNDERFLOW)
-				tx_activated--;
-
-#if 0
-			if (flags)
-				cerr << "status flags: " << flags << endl;
-#endif
-
-			if (tx_activated == 0) {
-				cerr << "Deactivating TX!" << endl;
-				slave->deactivateStream(tx, /* flags = */ 0, /* timeNs = */ 0);
-			}
-
-		}
-		else
-			usleep(500);
-	}
-
-}
-
-
+void* transmitter_thread(void* p) { }
 /***********************************************************************
  * Find available devices
  **********************************************************************/

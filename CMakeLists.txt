@@ -45,7 +45,7 @@ message(STATUS "SoapySDR include directories: ${SoapySDR_INCLUDE_DIRS}")
 ########################################################################
 # Setup boost
 ########################################################################
-find_package(Boost 1.36.0 REQUIRED COMPONENTS system thread)
+find_package(Boost 1.36.0 REQUIRED COMPONENTS system thread filesystem)
 include_directories(${Boost_INCLUDE_DIRS})
 SET(SOAPY_SHARED_LIBRARIES ${SOAPY_SHARED_LIBRARIES} ${Boost_LIBRARIES})
 ADD_DEFINITIONS(-DBOOST_ALL_DYN_LINK)

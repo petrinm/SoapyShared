@@ -28,6 +28,10 @@ using namespace std;
 using namespace boost::interprocess;
 using namespace boost::posix_time;
 
+static int round_up(int num, int factor) {
+	return num + factor - 1 - (num + factor - 1) % factor;
+}
+
 
 unique_ptr<SharedTimestampedRingBuffer> SharedTimestampedRingBuffer::create(const string& name, boost::interprocess::mode_t mode, string format, size_t n_blocks, size_t block_size) {
 
@@ -39,19 +43,27 @@ unique_ptr<SharedTimestampedRingBuffer> SharedTimestampedRingBuffer::create(cons
 	size_t page_size = mapped_region::get_page_size();
 	unique_ptr<SharedTimestampedRingBuffer> inst = unique_ptr<SharedTimestampedRingBuffer>(new SharedTimestampedRingBuffer(name));
 
+	const size_t n_channels = inst->getNumChannels();
+
 	inst->datasize = SoapySDR::formatToSize(format);
 	if (inst->datasize == 0)
 		throw runtime_error("Invalid datasize!");
 
 	// Calculate how much the header will take
 	unsigned control_size = sizeof(BufferControl) + n_blocks * sizeof(BlockMetadata);
-	control_size = ceil(control_size / page_size) * page_size;
+	control_size = round_up(control_size, page_size);
 
 	// Create new shared memory allocation
-	inst->shm = shared_memory_object(create_only, name.c_str(), mode);
 	inst->owner = true;
-	inst->shm.truncate(control_size + inst->datasize * n_blocks * block_size);
+	inst->shm = shared_memory_object(open_or_create, name.c_str(), mode); // TODO: should be create_only to be sure
+	inst->shm.truncate(control_size + n_channels * inst->datasize * n_blocks * block_size);
+	inst->n_blocks = n_blocks;
+	inst->block_size = block_size;
 	inst->buffer_size = n_blocks * block_size;
+
+	// TODO: fixme
+	inst->buffers.resize(n_channels);
+	inst->buffers[0] = NULL;
 
 	// Map and initialize the control struct
 	inst->mapped_ctrl = mapped_region(inst->shm, mode, sizeof(BufferControl));
@@ -60,6 +72,8 @@ unique_ptr<SharedTimestampedRingBuffer> SharedTimestampedRingBuffer::create(cons
 
 	// Initialize control struct
 	strncpy(inst->ctrl->format, format.c_str(), 5);
+	inst->ctrl->n_blocks = n_blocks;
+	inst->ctrl->block_size = block_size;
 	inst->ctrl->center_frequency = 100.0e6;
 	inst->ctrl->sample_rate = 1e6;
 	inst->ctrl->n_channels = 1;
@@ -80,7 +94,7 @@ unique_ptr<SharedTimestampedRingBuffer> SharedTimestampedRingBuffer::open(const 
 	size_t page_size = mapped_region::get_page_size();
 
 	// Open shared memory buffer
-	inst->shm = shared_memory_object(open_or_create, name.c_str(), mode);
+	inst->shm = shared_memory_object(open_only, name.c_str(), mode);
 	offset_t shm_size;
 	if (!inst->shm.get_size(shm_size) || shm_size == 0)
 		throw runtime_error("SHM empty!");
@@ -106,7 +120,9 @@ unique_ptr<SharedTimestampedRingBuffer> SharedTimestampedRingBuffer::open(const 
 	if (inst->datasize == 0 || inst->ctrl->sample_rate == 0)
 		throw runtime_error("Broken SHM!");
 
-	inst->buffer_size = inst->ctrl->n_blocks * inst->ctrl->block_size;
+	inst->n_blocks = inst->ctrl->n_blocks;
+	inst->block_size = inst->ctrl->block_size;
+	inst->buffer_size = inst->n_blocks * inst->block_size;
 	inst->version = inst->ctrl->version;
 	inst->prev = inst->ctrl->end; // sync();
 
@@ -118,13 +134,15 @@ unique_ptr<SharedTimestampedRingBuffer> SharedTimestampedRingBuffer::open(const 
 
 
 SharedTimestampedRingBuffer::SharedTimestampedRingBuffer(std::string name):
-	name(name), datasize(0), block_size(0), ctrl(NULL), prev(0), owner(false)
+	name(name), datasize(0), buffer_size(0), block_size(0), n_blocks(0), ctrl(NULL), prev(0), owner(false)
 { }
 
 
 void SharedTimestampedRingBuffer::mapBuffer(size_t location, boost::interprocess::mode_t mode) {
 
 	size_t buffer_size = datasize * ctrl->n_blocks * ctrl->block_size;
+	if (buffer_size == 0)
+		throw runtime_error("buffer_size == 0");
 
 	const size_t n_channels = getNumChannels();
 	buffers.resize(n_channels);
@@ -190,12 +208,24 @@ void SharedTimestampedRingBuffer::mapBuffer(size_t location, boost::interprocess
 }
 
 
+/*
+ * Check if a SoapyShared buffer exists with given name
+ */
 bool SharedTimestampedRingBuffer::checkSHM(std::string name) {
-	try {
-		boost::interprocess::shared_memory_object(open_only, name.c_str(), read_only);
 
-		// TODO: Check magic
-		// if (ctrl->magic == SharedTimestampedRingBuffer::Magic)
+	using namespace boost::interprocess;
+
+	try {
+		// Try to open the SHM
+		shared_memory_object shm(open_only, name.c_str(), read_only);
+
+		// Map the SHM
+		mapped_region mapped_ctrl(shm, read_only, sizeof(BufferControl));
+		BufferControl* ctrl = static_cast<BufferControl*>(mapped_ctrl.get_address());
+
+		// Check the magic
+		if (ctrl->magic != SharedTimestampedRingBuffer::Magic)
+			return false;
 
 		return true;
 	}
@@ -209,19 +239,24 @@ SharedTimestampedRingBuffer::~SharedTimestampedRingBuffer() {
 	// Unmap the manually mapped regions
 	// Boost's SHM and mappings' done with it destroyes themselves automatically
 
-	const size_t n_channels = getNumChannels();
+	const size_t n_channels = getNumChannels() ;
 	for (size_t ch = 0; ch < n_channels; ch++) {
+
+		if (ch >= buffers.size())
+			break;
 
 		void* buffer = buffers[ch];
 		size_t sz = datasize * buffer_size;
 
-#if defined(SUPPORT_LOOPING) && (defined(__linux__) || defined(__APPLE__))
-		munmap(buffer, 2 * sz);
-#elif defined(SUPPORT_LOOPING) && defined(_WIN32)
-		UnmapViewOfFile(buffer);
-		UnmapViewOfFile(buffer + sz);
-#endif
+		if (buffer != NULL) {
 
+#if defined(SUPPORT_LOOPING) && (defined(__linux__) || defined(__APPLE__))
+			munmap(buffer, 2 * sz);
+#elif defined(SUPPORT_LOOPING) && defined(_WIN32)
+			UnmapViewOfFile(buffer);
+			UnmapViewOfFile(buffer + sz);
+#endif
+		}
 	}
 
 	if (owner)

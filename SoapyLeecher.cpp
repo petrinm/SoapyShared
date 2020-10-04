@@ -2,6 +2,7 @@
 #include <SoapySDR/Registry.hpp>
 #include "SharedTimestampedRingBuffer.hpp"
 
+#include <boost/filesystem.hpp>
 
 #include <unistd.h>
 #include <cstring> // memcpy
@@ -201,52 +202,10 @@ public:
 		return 0;
 	}
 
-
-	/*
-	 *
-	 */
-	int mix(void* const dst, const void* src, size_t numElems, size_t maxpro) {
-
-		// TODO: Decimation works only with CF32
-		unsigned n_samples = 0, n_resamples = 0;
-		liquid_float_complex new_resamples[4], s;
-
-		// Pointer casting...
-		const liquid_float_complex* input = static_cast<const liquid_float_complex*>(src);
-		liquid_float_complex* const output = static_cast<liquid_float_complex* const>(dst);
-
-		for (size_t k = 0; k < numElems; k++) {
-
-			// Up/downconvert
-			nco_crcf_step(lo_nco);
-			nco_crcf_mix_down(lo_nco, input[k], &s);
-
-			// Resample
-			resamp_crcf_execute(resampler, s, new_resamples, &n_resamples);
-			for (unsigned int s = 0; s < n_resamples; s++)
-				output[n_samples++] = new_resamples[s];
-
-			// Over production!!!
-			if (n_samples > maxpro) {
-				cerr << "&" << endl;
-				break;
-			}
-
-		}
-
-		//cout <<  "! " << maxpro << "   " << new_samples << "       " << numElems << "  " << k << endl;
-		return n_samples;
-	}
-
 	int resampledReadStream(SoapySDR::Stream *stream, void *const *buffs, const size_t numElems, int &flags, long long &timeNs, const long timeoutUs=100000) {
 		(void) flags; (void) timeNs;
 
-		// Cast output buffer pointer
-		liquid_float_complex* const output = static_cast<liquid_float_complex* const>(buffs[0]);
-
 		long long timestamp;
-
-		// TODO: Decimation works only with CF32
 		liquid_float_complex s;
 		unsigned n_samples = 0, n_resamples = 0;
 		unsigned int wanted_samples = ceil(numElems * resampl_rate);
@@ -273,8 +232,11 @@ public:
 				n_samples = original_sample_pos;
 				nco_crcf_set_phase(lo_nco, original_phase);
 
+				// Cast buffer pointers
 				const liquid_float_complex* input = static_cast<const liquid_float_complex*>(read_pointer);
+				liquid_float_complex* output = static_cast<liquid_float_complex*>(buffs[ch]);
 
+				// Process the samples one by one
 				for (size_t k = 0; k < samples_available; k++) {
 
 					// Up/downconvert
@@ -523,29 +485,48 @@ private:
  * Find available devices
  **********************************************************************/
 
+//template <typename T> using Alloc = boost::interprocess::allocator<T, boost::interprocess::managed_mapped_file::segment_manager>;
+//template <typename T> using V = boost::container::vector<T, Alloc<T> >;
+
+
 /*
  * Try to find a shared memory buffer
  */
 SoapySDR::KwargsList findLeecher(const SoapySDR::Kwargs &args)
 {
-	// Check for "shm" -arg
-	string shm("/soapy");
+	using namespace boost::filesystem;
+
+	// Check for "shm" filter
+	string shm("soapy");
 	auto i = args.find("shm");
 	if (i != args.end())
 		shm = i->second;
 
 	SoapySDR::KwargsList results;
 
-	// Try to open the Shared Memory buffer to get details
-	if (!SharedTimestampedRingBuffer::checkSHM(shm)) {
-		return results;
+	// TODO: won't work in Windows!
+
+	// Foreach all SHMs
+	path p("/dev/shm/");
+	directory_iterator end_itr;
+	for (directory_iterator itr(p); itr != end_itr; ++itr)
+	{
+		// Check shm name
+		string shm_name = itr->path().filename().string();
+		if (shm_name.compare(0, shm.size(), shm))
+			continue;
+
+		// Try to open the Shared Memory buffer to get details
+		if (SharedTimestampedRingBuffer::checkSHM(shm_name) == false)
+			continue;
+
+		// Report back!
+		SoapySDR::Kwargs resultArgs;
+		resultArgs["shm"] = shm_name;
+
+		results.push_back(resultArgs);
 	}
 
-	// Report back!
-	SoapySDR::Kwargs resultArgs;
-	resultArgs["shm"] = shm;
-
-	results.push_back(resultArgs);
 	return results;
 }
 
