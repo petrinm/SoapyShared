@@ -2,7 +2,8 @@
 # Project setup -- only needed if device support is a stand-alone build
 # We recommend that the support module be built in-tree with the driver.
 ########################################################################
-cmake_minimum_required(VERSION 2.6)
+cmake_minimum_required(VERSION 2.8)
+
 project(SoapyShared CXX)
 enable_testing()
 
@@ -13,35 +14,60 @@ if(NOT CMAKE_BUILD_TYPE)
 endif(NOT CMAKE_BUILD_TYPE)
 set(CMAKE_BUILD_TYPE ${CMAKE_BUILD_TYPE} CACHE STRING "")
 
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR})
 
 ########################################################################
-# Header and library resources needed to communicate with the device.
-# These may be found within the build tree or in an external project.
+# Compiler configs
 ########################################################################
-set (SOAPY_SHARED_LIBRARIES rt liquid boost_system boost_thread pthread)
-set (CMAKE_CXX_FLAGS "-Wno-pointer-arith -Wno-unused-parameter") # Silence pointer arithmetic warnings
+set (CMAKE_CXX_STANDARD 14)
+set (CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_definitions(-DSUPPORT_LOOPING)
+ADD_DEFINITIONS(-DSUPPORT_LOOPING)
 
-########################################################################
-# Find boost
-########################################################################
-find_package(Boost REQUIRED COMPONENTS system thread)
-INCLUDE_DIRECTORIES( ${Boost_INCLUDE_DIR} )
+IF (MSVC)
+  # TODO
+ELSE()
+  set (CMAKE_CXX_FLAGS "-Wno-pointer-arith -Wno-unused-parameter") # Silence pointer arithmetic warnings
+ENDIF(MSVC)
+
 
 ########################################################################
 # build the module
 ########################################################################
-find_package(SoapySDR CONFIG)
+find_package(SoapySDR REQUIRED)
+include_directories(${SoapySDR_INCLUDE_DIRS})
 
-if (NOT SoapySDR_FOUND)
-    message(WARNING "SoapySDR development files not found! Cannot compile!")
-    return()
-endif ()
+message(STATUS "SoapySDR include directories: ${SoapySDR_INCLUDE_DIRS}")
 
 
+########################################################################
+# Setup boost
+########################################################################
+find_package(Boost 1.36.0 REQUIRED COMPONENTS system thread)
+include_directories(${Boost_INCLUDE_DIRS})
+SET(SOAPY_SHARED_LIBRARIES ${SOAPY_SHARED_LIBRARIES} ${Boost_LIBRARIES})
+ADD_DEFINITIONS(-DBOOST_ALL_DYN_LINK)
+
+message(STATUS "Boost include directories: ${Boost_INCLUDE_DIRS}")
+message(STATUS "Boost library directories: ${Boost_LIBRARY_DIRS}")
+message(STATUS "Boost libraries: ${Boost_LIBRARIES}")
+
+
+########################################################################
+# Setup Liquid-DSP
+########################################################################
+find_package(Liquid REQUIRED)
+include_directories(${LIQUID_INCLUDES})
+SET(SOAPY_SHARED_LIBRARIES ${SOAPY_SHARED_LIBRARIES} ${LIQUID_LIBRARIES})
+
+message(STATUS "Liquid-DSP include directories: ${LIQUID_INCLUDES}")
+message(STATUS "Liquid-DSP libraries: ${LIQUID_LIBRARIES}")
+
+########################################################################
+# Setup SoapySDR module
+########################################################################
 SOAPY_SDR_MODULE_UTIL(
     TARGET SoapyShared
-    SOURCES SoapySeeder.cpp SoapyLeecher.cpp SharedRingBuffer.cpp
+    SOURCES SoapySeeder.cpp SoapyLeecher.cpp SharedTimestampedRingBuffer.cpp
     LIBRARIES ${SOAPY_SHARED_LIBRARIES}
 )
