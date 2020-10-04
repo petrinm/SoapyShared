@@ -13,14 +13,36 @@
 #include <boost/interprocess/sync/interprocess_mutex.hpp>
 #include <boost/interprocess/sync/interprocess_condition.hpp>
 
+
 /*
+ * Metadata unit for each Datablock
  *
+ * size: 16 bytes
  */
-enum BufferState {
-	Uninitalized = 0,
-	Ready,
-	Streaming,
-	EndOfBurst,
+struct BlockMetadata {
+
+	/*
+	 * Timestamp in ns for the first sample in block
+	 * Type is ideally same 'long long' but written here out in exact byte-format.
+	 */
+	uint64_t timestamp;
+
+	/*
+	 * Possible flags are:
+	 * - SOAPY_SDR_HAS_TIME
+	 * - SOAPY_SDR_END_BURST
+	 * - SOAPY_SDR_MORE_FRAGMENTS
+	 *
+	 * 0xFFFF if not valid!
+	 */
+	uint32_t flags;
+
+	/*
+	 * Number of valid bytes in the block
+	 * Ideally this is always same as the length of the block but shorter blocks
+	 * are also support in some cases. For example when transmitting a burst.
+	 */
+	uint32_t size;
 };
 
 
@@ -29,22 +51,42 @@ enum BufferState {
  */
 struct BufferControl {
 
-	size_t end; // Current position on the stream
+	/*
+	 * Magic number to identify the control structure
+	 */
+	uint32_t magic;
 
-	// Metadata for streamed data
-	unsigned int version;			// Revision number of these settings
-	char format[6]; 			    // Data format string
-	double center_frequency;	    // Center frequency
-	double sample_rate;			    // Sample rate of the stream
+	/*
+	 * For the ring buffer
+	 */
+	size_t end;                     // Current position in the ring buffer
 	size_t block_size;              // Size of the timestamped blocks
-	enum BufferState state;
+	size_t n_blocks;                // Number of blocks
 
+	/*
+	 * Metadata about the streamed data
+	 */
+	unsigned int version;           // Revision number of these settings
+	char format[8];                 // SoapySDR data format string
+	double center_frequency;        // Center frequency
+	double sample_rate;             // Sample rate of the stream
+
+	size_t n_channels;              // Number of channels
+
+	// Write lock
 	boost::interprocess::interprocess_mutex write_mutex;
 
+	// Data used to test
 	boost::interprocess::interprocess_mutex data_mutex;
-	boost::interprocess::interprocess_condition cond_new_data;
-};
 
+	// New-data-has-arrived condition variable
+	boost::interprocess::interprocess_condition cond_new_data;
+
+	/*
+	 * Array of BlockMetadata (1 per datablock)
+	 */
+	BlockMetadata meta[0];
+};
 
 
 class SharedTimestampedRingBuffer
@@ -52,6 +94,8 @@ class SharedTimestampedRingBuffer
 	public:
 
 		typedef uint64_t Timestamp;
+
+		static const uint32_t Magic = 0x50A971;
 
 		/*
 		 * Check doest shared memory buffer exist?
@@ -61,7 +105,7 @@ class SharedTimestampedRingBuffer
 		/*
 		 * Create a new shared memory buffer
 		 */
-		static std::unique_ptr<SharedTimestampedRingBuffer> create(const std::string& name, boost::interprocess::mode_t mode, std::string format=std::string(), size_t buffer_size=0);
+		static std::unique_ptr<SharedTimestampedRingBuffer> create(const std::string& name, boost::interprocess::mode_t mode, std::string format=std::string(), size_t n_blocks=0, size_t block_size=0);
 
 		/*
 		 * Open a shared memory buffer
@@ -92,17 +136,27 @@ class SharedTimestampedRingBuffer
 		/*
 		 * Call getPointer() before calling this function!
 		 */
-		size_t read(size_t maxElems);
+		size_t read(size_t maxElems, long long& timestamp);
+
+		/*
+		 * Get timestamp for current sample
+		 */
+		long long getTimestamp();
 
 		/*
 		 * Return pointer to current read/write position
 		 */
 		template<typename T> T* getWritePointer() {
-			return static_cast<T*>(buffer + datasize * ctrl->end);
+			return static_cast<T*>(buffers[0] + datasize * ctrl->end);
 		}
 
 		template<typename T> T* getReadPointer() {
-			return static_cast<T*>(buffer + datasize * prev);
+			return static_cast<T*>(buffers[0] + datasize * prev);
+		}
+
+		template<typename T> void getReadPointers(T* ptrs[]) {
+			for (size_t ch = 0; ch < ctrl->n_channels; ch++)
+				ptrs[ch] =  static_cast<T*>(buffers[ch] + datasize * prev);
 		}
 
 		/*
@@ -157,6 +211,14 @@ class SharedTimestampedRingBuffer
 		}
 
 		/*
+		 * Return the number of channels
+		 */
+		size_t getNumChannels() const {
+			assert(ctrl != NULL);
+			return 1; // TODO: return ctrl->n_channels;
+		}
+
+		/*
 		 * Try to acquire the write lock for writing to the buffer
 		 */
 		void acquireWriteLock();
@@ -193,22 +255,24 @@ class SharedTimestampedRingBuffer
 		 */
 		SharedTimestampedRingBuffer(std::string name);
 
-		void mapBuffer(boost::interprocess::mode_t mode);
+		void mapBuffer(size_t location, boost::interprocess::mode_t mode);
 
 		//SharedTimestampedRingBuffer(SharedTimestampedRingBuffer && moved) { }
 		//SharedTimestampedRingBuffer& operator=(SharedTimestampedRingBuffer && moved) { }
 
 		std::string name;
-		size_t datasize, buffer_size;
+		size_t datasize;
+		size_t buffer_size;
+		size_t block_size;
 
 		boost::interprocess::shared_memory_object shm;
 		boost::interprocess::mapped_region mapped_ctrl, mapped_data;
 
 		BufferControl* ctrl;
-		void* buffer;
+		std::vector<void*> buffers;
 
 		size_t prev, version;
-		bool created;
+		bool owner;
 };
 
 #endif /* __SHARED_TIMESTAMPED_RING_BUFFER_H__ */

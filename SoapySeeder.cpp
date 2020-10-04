@@ -1,7 +1,7 @@
 #include <SoapySDR/Device.hpp>
 #include <SoapySDR/Registry.hpp>
 
-#include "SharedRingBuffer.hpp"
+#include "SharedTimestampedRingBuffer.hpp"
 
 #include <complex>
 #include <stdexcept>
@@ -72,7 +72,11 @@ public:
 	}
 
 	size_t getNumChannels(const int dir) const {
-		return 1;
+		if (dir == SOAPY_SDR_RX && rx_buffer)
+			return rx_buffer->getNumChannels();
+		else if (dir == SOAPY_SDR_TX && tx_buffer)
+			return tx_buffer->getNumChannels();
+		return 0;
 	}
 
 	bool getFullDuplex(const int direction, const size_t channel) const {
@@ -91,7 +95,7 @@ public:
 
 		if (direction == SOAPY_SDR_RX) {
 
-			rx_buffer = SharedRingBuffer::create(shm, boost::interprocess::read_write, format, bufsize);
+			rx_buffer = SharedTimestampedRingBuffer::create(shm, boost::interprocess::read_write, format, bufsize);
 
 			rx_buffer->sync();
 			rx_buffer->setCenterFrequency(slave->getFrequency(SOAPY_SDR_RX, 0));
@@ -619,7 +623,7 @@ public:
 private:
 	string shm;
 
-	unique_ptr<SharedRingBuffer> rx_buffer, tx_buffer;
+	unique_ptr<SharedTimestampedRingBuffer> rx_buffer, tx_buffer;
 	unique_ptr<SoapySDR::Device> slave;
 	SoapySDR::Stream* rx, *tx; // Slave device stream handles
 
@@ -651,7 +655,7 @@ void* transmitter_thread(void* p) {
 	size_t tx_buffer_size = 0x1000000; // 16 MSamples
 
 	// TODO: Hardcoded SHM name!
-	unique_ptr<SharedRingBuffer>tx_buffer = SharedRingBuffer::create("soapy_tx", boost::interprocess::read_write, tx_format, tx_buffer_size);
+	unique_ptr<SharedTimestampedRingBuffer>tx_buffer = SharedTimestampedRingBuffer::create("soapy_tx", boost::interprocess::read_write, tx_format, tx_buffer_size);
 
 
 	// Setup the tx stream ready on the slave devices
@@ -684,7 +688,8 @@ void* transmitter_thread(void* p) {
 				tx_buffer->getReadPointer<void>()
 			};
 
-			size_t readElems = tx_buffer->read(64 * 1024);
+			long long timestamp;
+			size_t readElems = tx_buffer->read(64 * 1024, timestamp);
 
 			// Read the real stream
 			int flags;

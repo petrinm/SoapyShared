@@ -29,6 +29,8 @@ enum BufferState {
  */
 struct BufferControl {
 
+	uint32_t magic;
+
 	size_t end; // Current position on the stream
 
 	// Metadata for streamed data
@@ -49,6 +51,8 @@ struct BufferControl {
 class SharedRingBuffer
 {
 	public:
+
+		static const uint32_t Magic = 0x50A971;
 
 		/*
 		 * Check doest shared memory buffer exist?
@@ -152,6 +156,11 @@ class SharedRingBuffer
 			assert(ctrl != NULL);
 			return ctrl->sample_rate;
 		}
+
+		/*
+		 * Return number of channels
+		 */
+		size_t getNumChannels() const { return 1; }
 
 		/*
 		 * Try to acquire the write lock for writing to the buffer

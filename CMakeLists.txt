@@ -28,6 +28,8 @@ IF (MSVC)
   # TODO
 ELSE()
   set (CMAKE_CXX_FLAGS "-Wno-pointer-arith -Wno-unused-parameter") # Silence pointer arithmetic warnings
+
+  SET(SOAPY_SHARED_LIBRARIES ${SOAPY_SHARED_LIBRARIES} rt pthread)
 ENDIF(MSVC)
 
 

@@ -18,6 +18,7 @@
 #elif defined(_WIN32)
 	#include <Windows.h>
 #else
+	#warning "Looping is not supported on this platform!"
 	#undefine SUPPORT_LOOPING
 #endif
 #endif
@@ -52,7 +53,9 @@ unique_ptr<SharedRingBuffer> SharedRingBuffer::create(const string& name, boost:
 	strncpy(inst->ctrl->format, format.c_str(), 5);
 	inst->ctrl->center_frequency = 100.0e6;
 	inst->ctrl->sample_rate = 1e6;
+	inst->ctrl->magic = SharedRingBuffer::Magic;
 	inst->version = inst->ctrl->version = 1;
+
 
 	// Map the ring buffer
 	inst->mapBuffer(mode);
@@ -77,6 +80,8 @@ unique_ptr<SharedRingBuffer> SharedRingBuffer::open(const string& name, boost::i
 	inst->mapped_ctrl = mapped_region(inst->shm, mode, sizeof(BufferControl));
 	inst->ctrl = static_cast<BufferControl*>(inst->mapped_ctrl.get_address());
 
+	if (inst->ctrl->magic == SharedRingBuffer::Magic)
+		throw(runtime_error("Unrecognized shared memory area!"));
 	if (inst->ctrl->state == BufferState::Uninitalized)
 		throw(runtime_error("Uninitalized buffer!"));
 
@@ -107,8 +112,8 @@ void SharedRingBuffer::mapBuffer(boost::interprocess::mode_t mode) {
 	size_t sz = datasize * buffer_size;
 	size_t page_size = mapped_region::get_page_size();
 
-#if defined(SUPPORT_LOOPING) && (defined(__linux__) || defined(__APPLE__))
-
+#if defined(SUPPORT_LOOPING)
+#if defined(__linux__) || defined(__APPLE__)
 	/*
 	 * POSIX implementation
 	 */
@@ -127,8 +132,7 @@ void SharedRingBuffer::mapBuffer(boost::interprocess::mode_t mode) {
 	// mapped_data = mapped_region(shm, mode, page_size, sz, buffer);
 	// mapped_data_loop = mapped_region(shm, mode, page_size, sz, &buffer[sz]);
 
-#elif defined(SUPPORT_LOOPING) && defined(_WIN32)
-
+#elif defined(_WIN32)
 	/*
 	 * Windows implementation
 	 */
@@ -149,6 +153,9 @@ void SharedRingBuffer::mapBuffer(boost::interprocess::mode_t mode) {
 		throw runtime_error("Fuck");
 
 #else
+	#error "Looping is not supported on this platform!"
+#endif /* SUPPORT_LOOPING */
+#else
 	/*
 	 * No looping just direct mapping using Boost
 	 */
@@ -161,6 +168,10 @@ void SharedRingBuffer::mapBuffer(boost::interprocess::mode_t mode) {
 bool SharedRingBuffer::checkSHM(std::string name) {
 	try {
 		boost::interprocess::shared_memory_object(open_only, name.c_str(), read_only);
+
+		// TODO: Check magic
+		// if (ctrl->magic == SharedTimestampedRingBuffer::Magic)
+
 		return true;
 	}
 	catch(...) {

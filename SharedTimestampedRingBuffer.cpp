@@ -13,35 +13,45 @@
 
 
 #ifdef SUPPORT_LOOPING
-#if defined(_POSIX_VERSION)
+#if defined(__linux__) || defined(__APPLE__)
 	#include <unistd.h>
 #elif defined(_WIN32)
 	#include <Windows.h>
 #else
+	#warning "Looping is not supported on this platform!"
 	#undefine SUPPORT_LOOPING
 #endif
 #endif
+
 
 using namespace std;
 using namespace boost::interprocess;
 using namespace boost::posix_time;
 
 
-unique_ptr<SharedTimestampedRingBuffer> SharedTimestampedRingBuffer::create(const string& name, boost::interprocess::mode_t mode, string format, size_t buffer_size) {
+unique_ptr<SharedTimestampedRingBuffer> SharedTimestampedRingBuffer::create(const string& name, boost::interprocess::mode_t mode, string format, size_t n_blocks, size_t block_size) {
 
-	unique_ptr<SharedTimestampedRingBuffer> inst = unique_ptr<SharedTimestampedRingBuffer>(new SharedTimestampedRingBuffer(name));
+	if (n_blocks == 0)
+		throw runtime_error("Invalid n_blocks!");
+	if (block_size == 0)
+		throw runtime_error("Invalid block_size!");
+
 	size_t page_size = mapped_region::get_page_size();
-
+	unique_ptr<SharedTimestampedRingBuffer> inst = unique_ptr<SharedTimestampedRingBuffer>(new SharedTimestampedRingBuffer(name));
 
 	inst->datasize = SoapySDR::formatToSize(format);
 	if (inst->datasize == 0)
 		throw runtime_error("Invalid datasize!");
 
-	// Create new buffer
+	// Calculate how much the header will take
+	unsigned control_size = sizeof(BufferControl) + n_blocks * sizeof(BlockMetadata);
+	control_size = ceil(control_size / page_size) * page_size;
+
+	// Create new shared memory allocation
 	inst->shm = shared_memory_object(create_only, name.c_str(), mode);
-	inst->created = true;
-	inst->shm.truncate(page_size + inst->datasize * buffer_size);
-	inst->buffer_size = buffer_size;
+	inst->owner = true;
+	inst->shm.truncate(control_size + inst->datasize * n_blocks * block_size);
+	inst->buffer_size = n_blocks * block_size;
 
 	// Map and initialize the control struct
 	inst->mapped_ctrl = mapped_region(inst->shm, mode, sizeof(BufferControl));
@@ -52,19 +62,21 @@ unique_ptr<SharedTimestampedRingBuffer> SharedTimestampedRingBuffer::create(cons
 	strncpy(inst->ctrl->format, format.c_str(), 5);
 	inst->ctrl->center_frequency = 100.0e6;
 	inst->ctrl->sample_rate = 1e6;
-	inst->version = 0x80000000 | inst->ctrl->version;
+	inst->ctrl->n_channels = 1;
+	inst->ctrl->magic = SharedTimestampedRingBuffer::Magic;
+	inst->version = inst->ctrl->version;
 
 	// Map the ring buffer
-	inst->mapBuffer(mode);
+	inst->mapBuffer(control_size, mode);
 
-	inst->ctrl->state = BufferState::Ready;
 	return inst;
 }
 
 
 unique_ptr<SharedTimestampedRingBuffer> SharedTimestampedRingBuffer::open(const string& name, boost::interprocess::mode_t mode) {
 
-	unique_ptr<SharedTimestampedRingBuffer> inst = unique_ptr<SharedTimestampedRingBuffer>(new SharedTimestampedRingBuffer(name));
+	unique_ptr<SharedTimestampedRingBuffer> inst =
+		unique_ptr<SharedTimestampedRingBuffer>(new SharedTimestampedRingBuffer(name));
 	size_t page_size = mapped_region::get_page_size();
 
 	// Open shared memory buffer
@@ -73,94 +85,118 @@ unique_ptr<SharedTimestampedRingBuffer> SharedTimestampedRingBuffer::open(const 
 	if (!inst->shm.get_size(shm_size) || shm_size == 0)
 		throw runtime_error("SHM empty!");
 
-	// Map the control struct
-	inst->mapped_ctrl = mapped_region(inst->shm, mode, sizeof(BufferControl));
-	inst->ctrl = static_cast<BufferControl*>(inst->mapped_ctrl.get_address());
-
-	if (inst->ctrl->state == BufferState::Uninitalized)
+	// Check various things from the header before actual mappign
+	mapped_region test_header(inst->shm, boost::interprocess::read_only, sizeof(BufferControl));
+	BufferControl* test_ctrl = static_cast<BufferControl*>(inst->mapped_ctrl.get_address());
+	if (test_ctrl->magic == SharedTimestampedRingBuffer::Magic)
 		throw(runtime_error("Uninitalized buffer!"));
+	if (test_ctrl->n_blocks == 0)
+		throw(runtime_error("Invalid number of blocks!"));
+	if (test_ctrl->block_size == 0)
+		throw(runtime_error("Invalid block size!"));
+
+	// Map the control struct
+	unsigned control_size = sizeof(BufferControl) + test_ctrl->n_blocks * sizeof(BlockMetadata);
+	control_size = ceil(control_size / page_size) * page_size;
+	inst->mapped_ctrl = mapped_region(inst->shm, mode, control_size);
+	inst->ctrl = static_cast<BufferControl*>(inst->mapped_ctrl.get_address());
 
 	// Parse format information
 	inst->datasize = SoapySDR::formatToSize(inst->ctrl->format);
 	if (inst->datasize == 0 || inst->ctrl->sample_rate == 0)
 		throw runtime_error("Broken SHM!");
 
-	inst->buffer_size = (shm_size - page_size) / inst->datasize;
+	inst->buffer_size = inst->ctrl->n_blocks * inst->ctrl->block_size;
 	inst->version = inst->ctrl->version;
 	inst->prev = inst->ctrl->end; // sync();
 
 	// Map the ring buffer
-	inst->mapBuffer(mode);
+	inst->mapBuffer(control_size, mode);
 
 	return inst;
 }
 
 
 SharedTimestampedRingBuffer::SharedTimestampedRingBuffer(std::string name):
-	name(name), datasize(0), buffer_size(0), ctrl(NULL), prev(0),
-	created(false)
+	name(name), datasize(0), block_size(0), ctrl(NULL), prev(0), owner(false)
 { }
 
 
-void SharedTimestampedRingBuffer::mapBuffer(boost::interprocess::mode_t mode) {
+void SharedTimestampedRingBuffer::mapBuffer(size_t location, boost::interprocess::mode_t mode) {
 
-	size_t sz = datasize * buffer_size;
-	size_t page_size = mapped_region::get_page_size();
+	size_t buffer_size = datasize * ctrl->n_blocks * ctrl->block_size;
 
-#if defined(SUPPORT_LOOPING) && (defined(__linux__) || defined(__APPLE__))
+	const size_t n_channels = getNumChannels();
+	buffers.resize(n_channels);
 
-	/*
-	 * POSIX implementation
-	 */
+	for (size_t ch = 0; ch < n_channels; ch++) {
 
-	// Get virtual address space of double size
-	buffer = mmap(NULL, 2 * sz, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	if (buffer == MAP_FAILED)
-		throw runtime_error("Out of virtual memory");
+		void* buffer;
+#ifdef SUPPORT_LOOPING
+#if defined(__linux__) || defined(__APPLE__)
+		/*
+		 * POSIX implementation
+		 */
 
-	int fd = shm.get_mapping_handle().handle;
-	mmap(buffer, sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, page_size);
-	mmap(buffer + sz, sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, page_size);
-	// TODO: Correct access modes
+		// Get virtual address space of double size
+		buffer = mmap(NULL, 2 * buffer_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		if (buffer == MAP_FAILED)
+			throw runtime_error("Out of virtual memory");
 
-	// Maybe:
-	// mapped_data = mapped_region(shm, mode, page_size, sz, buffer);
-	// mapped_data_loop = mapped_region(shm, mode, page_size, sz, &buffer[sz]);
+		int fd = shm.get_mapping_handle().handle;
+		mmap(buffer, buffer_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, location);
+		mmap(buffer + buffer_size, buffer_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, location);
+		// TODO: Correct access modes
 
-#elif defined(SUPPORT_LOOPING) && defined(_WIN32)
+		// Maybe:
+		// mapped_data = mapped_region(shm, mode, page_size, sz, buffer);
+		// mapped_data_loop = mapped_region(shm, mode, page_size, sz, &buffer[sz]);
 
-	/*
-	 * Windows implementation
-	 */
+#elif defined(_WIN32)
+		/*
+		 * Windows implementation
+		 */
 
-	// Make a temperatur virtual memory alloc to see where there's
-	void* virtual_ptr = VirtualAlloc(0, 2 * sz, MEM_RESERVE, PAGE_NOACCESS);
-	if (virtual_ptr == NULL)
-		throw runtime_error("Out of virtual memory");
-	VirtualFree(virtual_ptr, 0, MEM_RELEASE);
+		// Make a temperatur virtual memory alloc to see where there's
+		void* virtual_ptr = VirtualAlloc(0, 2 * buffer_size, MEM_RESERVE, PAGE_NOACCESS);
+		if (virtual_ptr == NULL)
+			throw runtime_error("Out of virtual memory");
+		VirtualFree(virtual_ptr, 0, MEM_RELEASE);
 
-	HANDLE hMapFile = shm.get_mapping_handle().handle;
-	baseptr = MapViewOfFileEx(hMapFile, FILE_MAP_ALL_ACCESS, 0, page_size, sz, virtual_ptr);
-	MapViewOfFileEx(mapping, FILE_MAP_ALL_ACCESS, 0, 0, page_size + sz, virtual_ptr + sz);
-	// TODO: Correct access modes
+		HANDLE hMapFile = shm.get_mapping_handle().handle;
+		baseptr = MapViewOfFileEx(hMapFile, FILE_MAP_ALL_ACCESS, 0, location, buffer_size, virtual_ptr);
+		MapViewOfFileEx(mapping, FILE_MAP_ALL_ACCESS, 0, 0, location + buffer_size, virtual_ptr + buffer_size);
+		// TODO: Correct access modes
 
-	cerr << "Org " << hex << virtual_ptr << "   " << baseptr << dec << endl;
-	if (virtual_ptr != baseptr)
-		throw runtime_error("Fuck");
+		cerr << "Org " << hex << virtual_ptr << "   " << baseptr << dec << endl;
+		if (virtual_ptr != baseptr)
+			throw runtime_error("Fuck");
 
 #else
-	/*
-	 * No looping just direct mapping using Boost
-	 */
-	mapped_data = mapped_region(shm, mode, page_size, sz);
-	buffer = mapped_data.get_address();
+	#error "Looping is not supported on this platform!"
+#endif /* SUPPORT_LOOPING */
+
+#else
+		/*
+		 * No looping just direct mapping using Boost
+		 */
+		mapped_data = mapped_region(shm, mode, location, buffer_size);
+		buffer = mapped_data.get_address();
 #endif
+
+		buffers[ch] = buffer;
+	}
+
 }
 
 
 bool SharedTimestampedRingBuffer::checkSHM(std::string name) {
 	try {
 		boost::interprocess::shared_memory_object(open_only, name.c_str(), read_only);
+
+		// TODO: Check magic
+		// if (ctrl->magic == SharedTimestampedRingBuffer::Magic)
+
 		return true;
 	}
 	catch(...) {
@@ -172,15 +208,23 @@ bool SharedTimestampedRingBuffer::checkSHM(std::string name) {
 SharedTimestampedRingBuffer::~SharedTimestampedRingBuffer() {
 	// Unmap the manually mapped regions
 	// Boost's SHM and mappings' done with it destroyes themselves automatically
+
+	const size_t n_channels = getNumChannels();
+	for (size_t ch = 0; ch < n_channels; ch++) {
+
+		void* buffer = buffers[ch];
+		size_t sz = datasize * buffer_size;
+
 #if defined(SUPPORT_LOOPING) && (defined(__linux__) || defined(__APPLE__))
-	size_t sz = datasize * buffer_size;
-	munmap(buffer, 2 * sz);
+		munmap(buffer, 2 * sz);
 #elif defined(SUPPORT_LOOPING) && defined(_WIN32)
-	UnmapViewOfFile(buffer);
-	UnmapViewOfFile(buffer + sz);
+		UnmapViewOfFile(buffer);
+		UnmapViewOfFile(buffer + sz);
 #endif
 
-	if (created)
+	}
+
+	if (owner)
 		shared_memory_object::remove(name.c_str());
 }
 
@@ -195,10 +239,11 @@ size_t SharedTimestampedRingBuffer::getSamplesAvailable() {
 
 size_t SharedTimestampedRingBuffer::getSamplesLeft() {
 	return (buffer_size - ctrl->end);
+	//return (n_buffer - ctrl->end);
 }
 
 
-size_t SharedTimestampedRingBuffer::read(size_t maxElems) {
+size_t SharedTimestampedRingBuffer::read(size_t maxElems, long long& timestamp) {
 
 	size_t samples_available;
 	size_t nextp = ctrl->end;
@@ -305,10 +350,14 @@ std::ostream& operator<<(std::ostream& stream, const SharedTimestampedRingBuffer
 	stream << buf.name << ": (version #" << buf.ctrl->version << ")"  << endl;
 	//stream << "state" << endl;
 	stream << "   Format: " << buf.ctrl->format << " (" << buf.datasize << " bytes)" << endl;
+	stream << "   Channels: " << buf.ctrl->n_channels << endl;
 	stream << "   Center frequency: " << buf.ctrl->center_frequency << endl;
 	stream << "   Sample rate: " << buf.ctrl->sample_rate << endl;
-	stream << "   Ring buffer size: " << hex << buf.buffer_size << dec << endl;
-	stream << "   Ring buffer pointer: " << hex << (size_t)buf.buffer << dec << endl;
+	stream << "   Ring buffer block count: " << hex << buf.ctrl->n_blocks << dec << endl;
+	stream << "   Ring buffer pointer: " << hex;
+	for (size_t ch = 0; ch < buf.ctrl->n_channels; ch++)
+		stream << (size_t)buf.buffers[ch] << " ";
+	stream << dec << endl;
 	stream << "   End: " << hex << (size_t)buf.ctrl->end << endl;
 	stream << endl;
 
