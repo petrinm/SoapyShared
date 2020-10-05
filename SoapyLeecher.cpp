@@ -39,7 +39,9 @@ public:
 
 
 		// Open shared memory buffer
-		rx_buffer = SharedTimestampedRingBuffer::open(shm, boost::interprocess::read_only);
+		rx_buffer = SharedTimestampedRingBuffer::open(shm, boost::interprocess::read_write); // TODO: R&W right required for some reason..
+
+		cout << *rx_buffer;
 
 		if (SharedTimestampedRingBuffer::checkSHM(shm + "_tx"))
 			tx_buffer = SharedTimestampedRingBuffer::open(shm + "_tx", boost::interprocess::read_write);
@@ -60,9 +62,9 @@ public:
 
 		// Check new resampling rate
 		float new_resampl_rate = rx_buffer->getSampleRate() / sample_rate;
-		if (new_resampl_rate == resampl_rate) {
+		if (new_resampl_rate != resampl_rate) { // TODO: waning int/float compare
 
-			cerr << "New resampling rate: " << resampl_rate << endl;
+			cout << "New resampling rate: " << resampl_rate << endl;
 			resampl_rate = new_resampl_rate;
 
 			if (resampl_rate != 1 && rx_buffer->getFormat() != "CF32")
@@ -70,7 +72,7 @@ public:
 
 			// Update resampler
 			resamp_crcf_destroy(resampler);
-			resampler = resamp_crcf_create(resampl_rate, 25, 0.4, 60.0f, 32);
+			resampler = resamp_crcf_create(1 / resampl_rate, 25, 0.4, 60.0f, 32);
 		}
 
 		// Calculate new frequency offset for mixing
@@ -210,16 +212,25 @@ public:
 		unsigned n_samples = 0, n_resamples = 0;
 		unsigned int wanted_samples = ceil(numElems * resampl_rate);
 
+		cout << "resampledReadStream " << numElems << " " << resampl_rate << " " << wanted_samples << endl;
+
+		// Limit wanted sample count if its crazy
+		//if (wanted_samples > rx_buffer->getCtrl().buffer_size / 2)
+		//	wanted_samples = rx_buffer->getCtrl().buffer_size / 2;
+
 		// Calculate absolute timeout time
 		boost::posix_time::ptime abs_timeout = boost::get_system_time() + boost::posix_time::microseconds(timeoutUs);
 		const size_t n_channels = rx_buffer->getNumChannels();
 
+		void* read_pointers[n_channels];
+
 		while (wanted_samples > 0) {
+			//cout << "wanted_samples " << wanted_samples << endl;
 
 			// How much new data is available?
-			void* read_pointer = rx_buffer->getReadPointer<void>();
+			rx_buffer->getReadPointers<void>(read_pointers);
 			size_t samples_available = rx_buffer->read(wanted_samples, timestamp);
-#ifdef DEBUG
+#if 1 // def DEBUG
 			cout << "# " <<  samples_available << endl;
 #endif
 
@@ -233,7 +244,7 @@ public:
 				nco_crcf_set_phase(lo_nco, original_phase);
 
 				// Cast buffer pointers
-				const liquid_float_complex* input = static_cast<const liquid_float_complex*>(read_pointer);
+				const liquid_float_complex* input = static_cast<const liquid_float_complex*>(read_pointers[ch]);
 				liquid_float_complex* output = static_cast<liquid_float_complex*>(buffs[ch]);
 
 				// Process the samples one by one
@@ -245,9 +256,12 @@ public:
 
 					// Resample and store the new samples
 					resamp_crcf_execute(resampler, s, &output[n_samples], &n_resamples);
+
+					//cout << k << "  > " << n_resamples << endl;
 					n_samples += n_resamples;
 				}
 			}
+			//cout << "n_samples" << n_samples << endl;
 
 
 			if (boost::get_system_time() >= abs_timeout)
@@ -262,6 +276,7 @@ public:
 
 		return n_samples;
 	}
+
 
 	int readStream(SoapySDR::Stream *stream, void *const *buffs, const size_t numElems, int &flags, long long &timeNs, const long timeoutUs=100000) {
 		(void) flags; (void) timeNs;
@@ -280,23 +295,31 @@ public:
 			if (resampl_rate != 1)
 			 	return resampledReadStream(stream, buffs, numElems, flags, timeNs, timeoutUs);
 
+
+			cerr << endl << "ReadStream " << numElems << endl;
+			if (numElems % rx_buffer->getCtrl().block_size != 0)
+				cerr << "numElems " << numElems << " is not a nice number " << endl;
+
 			// Calculate absolute timeout time
 			boost::posix_time::ptime abs_timeout = boost::get_system_time() + boost::posix_time::microseconds(timeoutUs);
 			const size_t n_channels = rx_buffer->getNumChannels();
 
 			long long timestamp;
 			unsigned int wanted_samples = numElems;
+			unsigned int new_samples = 0;
 
-			void* read_buffers[n_channels];
+			void* read_pointers[n_channels];
 
-			while (wanted_samples > 0) {
+			while (1) {
 
 				// How much new data is available?
-				rx_buffer->getReadPointers<void>(read_buffers);
+				rx_buffer->getReadPointers<void>(read_pointers);
+
 				size_t samples_available = rx_buffer->read(wanted_samples, timestamp);
 				cout << "# " <<  samples_available << endl;
 
 				assert(samples_available <= wanted_samples);
+				wanted_samples -= samples_available;
 
 				if (samples_available > 0) {
 
@@ -307,18 +330,23 @@ public:
 
 					// Copy new samplese to outputs
 					for (size_t ch = 0; ch < n_channels; ch++)
-						memcpy(buffs[ch], read_buffers[ch], samples_available * rx_buffer->getDatasize());
-					wanted_samples -= samples_available;
+						memcpy(buffs[ch], read_pointers[ch], samples_available * rx_buffer->getDatasize());
+					new_samples += samples_available;
+
+					// Enought?
+					if (new_samples >= numElems)
+						break;
 				}
 
 				if (boost::get_system_time() >= abs_timeout)
 					return SOAPY_SDR_TIMEOUT;
 
+				//cout << "wating" << endl;
 				rx_buffer->wait(abs_timeout);
-
 			}
 
-			return SOAPY_SDR_TIMEOUT;
+			cerr << "new_samples " << new_samples << endl;
+			return new_samples;
 		}
 		return SOAPY_SDR_STREAM_ERROR;
 	}
@@ -387,7 +415,7 @@ public:
 		if (direction == SOAPY_SDR_RX) {
 
 			if (rx_buffer.get() == nullptr)
-				throw runtime_error("TX not available");
+				throw runtime_error("RX not available");
 
 			center_frequency = frequency;
 			update_converter();

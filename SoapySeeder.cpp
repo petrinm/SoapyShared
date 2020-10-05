@@ -139,7 +139,6 @@ public:
 #endif
 			// Setup the slace device
 			rx = slave->setupStream(direction, format, channels, args);
-			cout << "ccc";
 			return rx;
 		}
 		else if (direction == SOAPY_SDR_TX) {
@@ -198,9 +197,10 @@ public:
 			//if (readElems < numElems)
 			//	cerr << "§";
 
-			void* shmbuffs[] = {
-				rx_buffer->getWritePointer<void>()
-			};
+			const unsigned n_channels = 1;
+
+			void* shmbuffs[n_channels];
+			rx_buffer->getWritePointers<void>(shmbuffs);
 
 			// Read the real stream
 			int ret = slave->readStream(stream, shmbuffs, readElems, flags, timeNs, timeoutUs);
@@ -209,7 +209,7 @@ public:
 
 			//if (numElemnt % block_size != 0) {}
 
-#if DEBUG
+#ifdef DEBUG
 			cerr << hex << *shmbuffs << dec << endl;
 			cerr << "numElems = " << numElems << "; readElems = " << readElems << endl;
 			cerr << "ret = " << ret << endl;
@@ -224,7 +224,9 @@ public:
 			}
 
 			// Copy data also to caller's buffer
-			memcpy(*buffs, *shmbuffs, rx_buffer->getDatasize() * ret);
+			for (unsigned ch = 0; ch < n_channels; ch++) {
+				memcpy(buffs[ch], shmbuffs[ch], rx_buffer->getDatasize() * ret);
+			}
 
 			//if (flags)  UHD gives
 			//	cerr << "Flags!" << flags << endl;
@@ -267,8 +269,9 @@ public:
 	void setFrequency(const int direction, const size_t channel, const double frequency, const SoapySDR::Kwargs &args=SoapySDR::Kwargs()) {
 		cerr << "setFrequency(" << direction << "," << channel << "," << frequency << ")" << endl;
 		slave->setFrequency(direction, channel, frequency, args);
-		if (direction == SOAPY_SDR_RX && rx_buffer)
+		if (direction == SOAPY_SDR_RX && rx_buffer.get() != nullptr)
 			rx_buffer->setCenterFrequency(frequency);
+
 	}
 
 	void setSampleRate(const int direction, const size_t channel, const double rate) {

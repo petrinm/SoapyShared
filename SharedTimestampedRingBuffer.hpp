@@ -150,6 +150,11 @@ class SharedTimestampedRingBuffer
 			return static_cast<T*>(buffers[0] + datasize * ctrl->end);
 		}
 
+		template<typename T> T* getWritePointers(T* ptrs[]) {
+			for (size_t ch = 0; ch < ctrl->n_channels; ch++)
+				ptrs[ch] =  static_cast<T*>(buffers[ch] + datasize * ctrl->end);
+		}
+
 		template<typename T> T* getReadPointer() {
 			return static_cast<T*>(buffers[0] + datasize * prev);
 		}
@@ -248,6 +253,9 @@ class SharedTimestampedRingBuffer
 		 */
 		friend std::ostream& operator<<(std::ostream& stream, const SharedTimestampedRingBuffer& buf);
 
+		const BufferControl& getCtrl() const {
+			return *ctrl;
+		}
 	private:
 
 		/*
@@ -284,5 +292,7 @@ class SharedTimestampedRingBuffer
 		size_t prev, version;
 		bool owner;
 };
+
+std::ostream& operator<<(std::ostream& stream, const SharedTimestampedRingBuffer& buf);
 
 #endif /* __SHARED_TIMESTAMPED_RING_BUFFER_H__ */

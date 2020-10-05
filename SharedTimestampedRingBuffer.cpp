@@ -28,10 +28,14 @@ using namespace std;
 using namespace boost::interprocess;
 using namespace boost::posix_time;
 
+
 static int round_up(int num, int factor) {
 	return num + factor - 1 - (num + factor - 1) % factor;
 }
 
+static int round_down(int num, int factor) {
+	return num - (num % factor);
+}
 
 unique_ptr<SharedTimestampedRingBuffer> SharedTimestampedRingBuffer::create(const string& name, boost::interprocess::mode_t mode, string format, size_t n_blocks, size_t block_size) {
 
@@ -66,9 +70,14 @@ unique_ptr<SharedTimestampedRingBuffer> SharedTimestampedRingBuffer::create(cons
 	inst->buffers[0] = NULL;
 
 	// Map and initialize the control struct
-	inst->mapped_ctrl = mapped_region(inst->shm, mode, sizeof(BufferControl));
+	inst->mapped_ctrl = mapped_region(inst->shm, mode, 0, sizeof(BufferControl));
 	memset(inst->mapped_ctrl.get_address(), 0, sizeof(BufferControl));
 	inst->ctrl = new (inst->mapped_ctrl.get_address()) BufferControl;
+
+	// Boost mutexes and condition doesn't need any initialization
+	//write_mutex
+	//data_mutex
+	//cond_new_data
 
 	// Initialize control struct
 	strncpy(inst->ctrl->format, format.c_str(), 5);
@@ -100,9 +109,10 @@ unique_ptr<SharedTimestampedRingBuffer> SharedTimestampedRingBuffer::open(const 
 		throw runtime_error("SHM empty!");
 
 	// Check various things from the header before actual mappign
-	mapped_region test_header(inst->shm, boost::interprocess::read_only, sizeof(BufferControl));
-	BufferControl* test_ctrl = static_cast<BufferControl*>(inst->mapped_ctrl.get_address());
-	if (test_ctrl->magic == SharedTimestampedRingBuffer::Magic)
+	mapped_region test_header(inst->shm, boost::interprocess::read_only, 0, sizeof(BufferControl));
+	BufferControl* test_ctrl = static_cast<BufferControl*>(test_header.get_address());
+
+	if (test_ctrl->magic != SharedTimestampedRingBuffer::Magic)
 		throw(runtime_error("Uninitalized buffer!"));
 	if (test_ctrl->n_blocks == 0)
 		throw(runtime_error("Invalid number of blocks!"));
@@ -112,7 +122,7 @@ unique_ptr<SharedTimestampedRingBuffer> SharedTimestampedRingBuffer::open(const 
 	// Map the control struct
 	unsigned control_size = sizeof(BufferControl) + test_ctrl->n_blocks * sizeof(BlockMetadata);
 	control_size = ceil(control_size / page_size) * page_size;
-	inst->mapped_ctrl = mapped_region(inst->shm, mode, control_size);
+	inst->mapped_ctrl = mapped_region(inst->shm, mode, 0, control_size);
 	inst->ctrl = static_cast<BufferControl*>(inst->mapped_ctrl.get_address());
 
 	// Parse format information
@@ -220,7 +230,7 @@ bool SharedTimestampedRingBuffer::checkSHM(std::string name) {
 		shared_memory_object shm(open_only, name.c_str(), read_only);
 
 		// Map the SHM
-		mapped_region mapped_ctrl(shm, read_only, sizeof(BufferControl));
+		mapped_region mapped_ctrl(shm, read_only, 0, sizeof(BufferControl));
 		BufferControl* ctrl = static_cast<BufferControl*>(mapped_ctrl.get_address());
 
 		// Check the magic
@@ -238,6 +248,9 @@ bool SharedTimestampedRingBuffer::checkSHM(std::string name) {
 SharedTimestampedRingBuffer::~SharedTimestampedRingBuffer() {
 	// Unmap the manually mapped regions
 	// Boost's SHM and mappings' done with it destroyes themselves automatically
+
+	if (owner && ctrl)
+		ctrl->magic = 0x0;
 
 	const size_t n_channels = getNumChannels() ;
 	for (size_t ch = 0; ch < n_channels; ch++) {
@@ -259,8 +272,11 @@ SharedTimestampedRingBuffer::~SharedTimestampedRingBuffer() {
 		}
 	}
 
-	if (owner)
+	if (owner) {
+		cout << "detroying shm " << name << endl;
+
 		shared_memory_object::remove(name.c_str());
+	}
 }
 
 
@@ -268,9 +284,11 @@ void SharedTimestampedRingBuffer::sync() {
 	prev = ctrl->end;
 }
 
+
 size_t SharedTimestampedRingBuffer::getSamplesAvailable() {
 	return (ctrl->end < prev) ? (buffer_size - prev) : (ctrl->end - prev);
 }
+
 
 size_t SharedTimestampedRingBuffer::getSamplesLeft() {
 	return (buffer_size - ctrl->end);
@@ -284,23 +302,25 @@ size_t SharedTimestampedRingBuffer::read(size_t maxElems, long long& timestamp) 
 	size_t nextp = ctrl->end;
 
 	if (nextp < prev) { // Has the buffer wrapped around?
+
 #ifdef SUPPORT_LOOPING
+		// Calculate the true number of new samples in the buffer
+		// and ignore that the buffer read will overflow
 		samples_available = (buffer_size - prev) + nextp;
 #else
+		// Limit available new samples so that read stops to the end of the buffer.
+		// Next read will continue from the beginning
 		samples_available = buffer_size - prev;
 #endif
-
-		//cerr << "a " << (samples_available + nextp) << "  "  << (buffer_size / 2) << endl;
-		if (samples_available + nextp > buffer_size / 2)
-			cerr << "U";
-
 	}
 	else {
 		samples_available = nextp - prev;
-		//cerr << "b " << samples_available << "  "  << (buffer_size / 2) << endl;
-		if (samples_available > buffer_size / 2)
-			cerr << "U";
 	}
+
+	// If "too many" samples are available there's a change we have lost the sync
+	// in ring buffer due to too slow reading. Alert the user by printing U.
+	if (samples_available > buffer_size / 2)
+		cerr << "U";
 
 #if 0
 	cerr << endl;
@@ -315,10 +335,24 @@ size_t SharedTimestampedRingBuffer::read(size_t maxElems, long long& timestamp) 
 		samples_available = maxElems;
 
 	// Move prev-pointer
-	prev += samples_available;
-	if (prev == buffer_size)
-		prev = 0;
+	size_t nprev = (prev + samples_available) % buffer_size;
 
+#if 0
+	// Get the timestamp for the first sample
+	unsigned int prev_block = nprev / ctrl->block_size;
+	if (nprev % ctrl->block_size == 0) {
+		timestamp = getMetadata(prev_block).timestamp;
+	}
+	else {
+		// Interpolate
+		unsigned int next_block = prev / ctrl->block_size;
+		long long a = getMetadata(prev_block).timestamp;
+		long long b = getMetadata(next_block).timestamp;
+		timestamp = a + (b - a) / samples_available;
+	}
+#endif
+
+	prev = nprev;
 	return samples_available;
 }
 
@@ -331,9 +365,11 @@ void SharedTimestampedRingBuffer::moveEnd(size_t numItems) {
 	ctrl->cond_new_data.notify_all();
 }
 
+
 std::string SharedTimestampedRingBuffer::getFormat() const {
 	return (ctrl != NULL) ? ctrl->format :  "-";
 }
+
 
 bool SharedTimestampedRingBuffer::settingsChanged() {
 	if (ctrl) {
@@ -367,15 +403,22 @@ void SharedTimestampedRingBuffer::releaseWriteLock() {
 
 void SharedTimestampedRingBuffer::wait(unsigned int timeoutUs) {
 	assert(ctrl != NULL);
+
 	ptime abs_timeout = boost::get_system_time() + microseconds(timeoutUs);
+	cout << 2;
 	boost::interprocess::scoped_lock<interprocess_mutex> data_lock(ctrl->data_mutex, abs_timeout);
+	cout << 3;
 	ctrl->cond_new_data.timed_wait(data_lock, abs_timeout);
+	cout << 4;
 }
 
 void SharedTimestampedRingBuffer::wait(const boost::posix_time::ptime& abs_timeout) {
 	assert(ctrl != NULL);
+	cout << 7;
 	boost::interprocess::scoped_lock<interprocess_mutex> data_lock(ctrl->data_mutex, abs_timeout);
+	cout << 8;
 	ctrl->cond_new_data.timed_wait(data_lock, abs_timeout);
+	cout << 9;
 }
 
 
@@ -386,14 +429,14 @@ std::ostream& operator<<(std::ostream& stream, const SharedTimestampedRingBuffer
 	//stream << "state" << endl;
 	stream << "   Format: " << buf.ctrl->format << " (" << buf.datasize << " bytes)" << endl;
 	stream << "   Channels: " << buf.ctrl->n_channels << endl;
-	stream << "   Center frequency: " << buf.ctrl->center_frequency << endl;
+	stream << "   Center frequency: " << buf.ctrl->center_frequency << " Hz" << endl;
 	stream << "   Sample rate: " << buf.ctrl->sample_rate << endl;
 	stream << "   Ring buffer block count: " << hex << buf.ctrl->n_blocks << dec << endl;
-	stream << "   Ring buffer pointer: " << hex;
+	stream << "   Ring buffer pointer:" << hex;
 	for (size_t ch = 0; ch < buf.ctrl->n_channels; ch++)
-		stream << (size_t)buf.buffers[ch] << " ";
+		stream << " 0x" << (size_t)buf.buffers[ch];
 	stream << dec << endl;
-	stream << "   End: " << hex << (size_t)buf.ctrl->end << endl;
+	stream << "   End: 0x" << hex << (size_t)buf.ctrl->end << endl;
 	stream << endl;
 
 	return stream;
