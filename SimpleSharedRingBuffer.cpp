@@ -7,7 +7,7 @@
 #include <SoapySDR/Registry.hpp>
 #include <SoapySDR/Formats.hpp>
 
-#include "SharedRingBuffer.hpp"
+#include "SimpleSharedRingBuffer.hpp"
 
 #include <boost/interprocess/sync/scoped_lock.hpp>
 
@@ -28,9 +28,9 @@ using namespace boost::interprocess;
 using namespace boost::posix_time;
 
 
-unique_ptr<SharedRingBuffer> SharedRingBuffer::create(const string& name, boost::interprocess::mode_t mode, string format, size_t buffer_size) {
+unique_ptr<SimpleSharedRingBuffer> SimpleSharedRingBuffer::create(const string& name, boost::interprocess::mode_t mode, string format, size_t buffer_size) {
 
-	unique_ptr<SharedRingBuffer> inst = unique_ptr<SharedRingBuffer>(new SharedRingBuffer(name));
+	unique_ptr<SimpleSharedRingBuffer> inst = unique_ptr<SimpleSharedRingBuffer>(new SimpleSharedRingBuffer(name));
 	size_t page_size = mapped_region::get_page_size();
 
 
@@ -40,7 +40,7 @@ unique_ptr<SharedRingBuffer> SharedRingBuffer::create(const string& name, boost:
 
 	// Create new buffer
 	inst->shm = shared_memory_object(create_only, name.c_str(), mode);
-	inst->created = true;
+	inst->owner = true;
 	inst->shm.truncate(page_size + inst->datasize * buffer_size);
 	inst->buffer_size = buffer_size;
 
@@ -53,7 +53,7 @@ unique_ptr<SharedRingBuffer> SharedRingBuffer::create(const string& name, boost:
 	strncpy(inst->ctrl->format, format.c_str(), 5);
 	inst->ctrl->center_frequency = 100.0e6;
 	inst->ctrl->sample_rate = 1e6;
-	inst->ctrl->magic = SharedRingBuffer::Magic;
+	inst->ctrl->magic = SimpleSharedRingBuffer::Magic;
 	inst->version = inst->ctrl->version = 1;
 
 
@@ -65,9 +65,9 @@ unique_ptr<SharedRingBuffer> SharedRingBuffer::create(const string& name, boost:
 }
 
 
-unique_ptr<SharedRingBuffer> SharedRingBuffer::open(const string& name, boost::interprocess::mode_t mode) {
+unique_ptr<SimpleSharedRingBuffer> SimpleSharedRingBuffer::open(const string& name, boost::interprocess::mode_t mode) {
 
-	unique_ptr<SharedRingBuffer> inst = unique_ptr<SharedRingBuffer>(new SharedRingBuffer(name));
+	unique_ptr<SimpleSharedRingBuffer> inst = unique_ptr<SimpleSharedRingBuffer>(new SimpleSharedRingBuffer(name));
 	size_t page_size = mapped_region::get_page_size();
 
 	// Open shared memory buffer
@@ -80,7 +80,7 @@ unique_ptr<SharedRingBuffer> SharedRingBuffer::open(const string& name, boost::i
 	inst->mapped_ctrl = mapped_region(inst->shm, mode, sizeof(BufferControl));
 	inst->ctrl = static_cast<BufferControl*>(inst->mapped_ctrl.get_address());
 
-	if (inst->ctrl->magic == SharedRingBuffer::Magic)
+	if (inst->ctrl->magic == SimpleSharedRingBuffer::Magic)
 		throw(runtime_error("Unrecognized shared memory area!"));
 	if (inst->ctrl->state == BufferState::Uninitalized)
 		throw(runtime_error("Uninitalized buffer!"));
@@ -101,13 +101,13 @@ unique_ptr<SharedRingBuffer> SharedRingBuffer::open(const string& name, boost::i
 }
 
 
-SharedRingBuffer::SharedRingBuffer(std::string name):
+SimpleSharedRingBuffer::SimpleSharedRingBuffer(std::string name):
 	name(name), datasize(0), buffer_size(0), ctrl(NULL), prev(0),
-	created(false)
+	owner(false)
 { }
 
 
-void SharedRingBuffer::mapBuffer(boost::interprocess::mode_t mode) {
+void SimpleSharedRingBuffer::mapBuffer(boost::interprocess::mode_t mode) {
 
 	size_t sz = datasize * buffer_size;
 	size_t page_size = mapped_region::get_page_size();
@@ -165,12 +165,18 @@ void SharedRingBuffer::mapBuffer(boost::interprocess::mode_t mode) {
 }
 
 
-bool SharedRingBuffer::checkSHM(std::string name) {
+bool SimpleSharedRingBuffer::checkSHM(std::string name) {
 	try {
-		boost::interprocess::shared_memory_object(open_only, name.c_str(), read_only);
+		// Try to open the SHM
+		shared_memory_object shm(open_only, name.c_str(), read_only);
 
-		// TODO: Check magic
-		// if (ctrl->magic == SharedTimestampedRingBuffer::Magic)
+		// Map the SHM
+		mapped_region mapped_ctrl(shm, read_only, 0, sizeof(BufferControl));
+		BufferControl* ctrl = static_cast<BufferControl*>(mapped_ctrl.get_address());
+
+		// Check the magic
+		if (ctrl->magic != SimpleSharedRingBuffer::Magic)
+			return false;
 
 		return true;
 	}
@@ -180,7 +186,12 @@ bool SharedRingBuffer::checkSHM(std::string name) {
 }
 
 
-SharedRingBuffer::~SharedRingBuffer() {
+SimpleSharedRingBuffer::~SimpleSharedRingBuffer() {
+
+	// Reset magic
+	if (owner && ctrl)
+		ctrl->magic = 0x0;
+
 	// Unmap the manually mapped regions
 	// Boost's SHM and mappings' done with it destroyes themselves automatically
 #if defined(SUPPORT_LOOPING) && (defined(__linux__) || defined(__APPLE__))
@@ -191,25 +202,32 @@ SharedRingBuffer::~SharedRingBuffer() {
 	UnmapViewOfFile(buffer + sz);
 #endif
 
-	if (created)
+	if (owner)
 		shared_memory_object::remove(name.c_str());
 }
 
 
-void SharedRingBuffer::sync() {
+void SimpleSharedRingBuffer::sync() {
 	prev = ctrl->end;
 }
 
-size_t SharedRingBuffer::getSamplesAvailable() {
+
+size_t SimpleSharedRingBuffer::getSamplesAvailable() {
+#ifdef SUPPORT_LOOPING
+	return (ctrl->end < prev) ? (buffer_size - prev + ctrl->end) : (ctrl->end - prev);
+#else
 	return (ctrl->end < prev) ? (buffer_size - prev) : (ctrl->end - prev);
+#endif
 }
 
-size_t SharedRingBuffer::getSamplesLeft() {
+
+size_t SimpleSharedRingBuffer::getSamplesLeft() {
 	return (buffer_size - ctrl->end);
 }
 
 
-size_t SharedRingBuffer::read(size_t maxElems) {
+size_t SimpleSharedRingBuffer::read(size_t maxElems, long long& timestamp) {
+	(void)timestamp;
 
 	size_t samples_available;
 	size_t nextp = ctrl->end;
@@ -254,19 +272,28 @@ size_t SharedRingBuffer::read(size_t maxElems) {
 }
 
 
-void SharedRingBuffer::moveEnd(size_t numItems) {
-	size_t new_pos = ctrl->end + numItems;
+void SimpleSharedRingBuffer::moveEnd(size_t numItems) {
+
+#ifdef SUPPORT_LOOPING
+	size_t new_pos = (ctrl->end + numItems) % buffer_size;
+#else
+	assert(ctrl->end + numItems <= buffer_size);
+	size_t new_pos = (ctrl->end + numItems);
 	if (new_pos >= buffer_size) new_pos = 0;
+#endif
+
 	//cerr << "end = " << ctrl->end << "; new_pos = " << new_pos << endl;
 	ctrl->end = new_pos;
 	ctrl->cond_new_data.notify_all();
 }
 
-std::string SharedRingBuffer::getFormat() const {
+
+std::string SimpleSharedRingBuffer::getFormat() const {
 	return (ctrl != NULL) ? ctrl->format :  "-";
 }
 
-bool SharedRingBuffer::settingsChanged() {
+
+bool SimpleSharedRingBuffer::settingsChanged() {
 	if (ctrl) {
 		size_t prev = version;
 		version = ctrl->version;
@@ -275,42 +302,42 @@ bool SharedRingBuffer::settingsChanged() {
 	return false;
 }
 
-void SharedRingBuffer::setCenterFrequency(double frequency) {
+void SimpleSharedRingBuffer::setCenterFrequency(double frequency) {
 	assert(ctrl != NULL);
 	ctrl->center_frequency = frequency;
 	ctrl->version++;
 }
 
-void SharedRingBuffer::setSampleRate(double rate) {
+void SimpleSharedRingBuffer::setSampleRate(double rate) {
 	assert(ctrl != NULL);
 	ctrl->sample_rate = rate;
 	ctrl->version++;
 }
 
-void SharedRingBuffer::acquireWriteLock() {
+void SimpleSharedRingBuffer::acquireWriteLock() {
 	assert(ctrl != NULL);
 	ctrl->write_mutex.lock();
 }
 
-void SharedRingBuffer::releaseWriteLock() {
+void SimpleSharedRingBuffer::releaseWriteLock() {
 	ctrl->write_mutex.unlock();
 }
 
-void SharedRingBuffer::wait(unsigned int timeoutUs) {
+void SimpleSharedRingBuffer::wait(unsigned int timeoutUs) {
 	assert(ctrl != NULL);
 	ptime abs_timeout = boost::get_system_time() + microseconds(timeoutUs);
 	boost::interprocess::scoped_lock<interprocess_mutex> data_lock(ctrl->data_mutex, abs_timeout);
 	ctrl->cond_new_data.timed_wait(data_lock, abs_timeout);
 }
 
-void SharedRingBuffer::wait(const boost::posix_time::ptime& abs_timeout) {
+void SimpleSharedRingBuffer::wait(const boost::posix_time::ptime& abs_timeout) {
 	assert(ctrl != NULL);
 	boost::interprocess::scoped_lock<interprocess_mutex> data_lock(ctrl->data_mutex, abs_timeout);
 	ctrl->cond_new_data.timed_wait(data_lock, abs_timeout);
 }
 
 
-std::ostream& operator<<(std::ostream& stream, const SharedRingBuffer& buf) {
+std::ostream& operator<<(std::ostream& stream, const SimpleSharedRingBuffer& buf) {
 	assert(buf.ctrl != NULL);
 	stream << endl;
 	stream << buf.name << ": (version #" << buf.ctrl->version << ")"  << endl;

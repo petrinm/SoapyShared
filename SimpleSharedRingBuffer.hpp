@@ -48,7 +48,7 @@ struct BufferControl {
 
 
 
-class SharedRingBuffer
+class SimpleSharedRingBuffer
 {
 	public:
 
@@ -62,18 +62,18 @@ class SharedRingBuffer
 		/*
 		 * Create a new shared memory buffer
 		 */
-		static std::unique_ptr<SharedRingBuffer> create(const std::string& name, boost::interprocess::mode_t mode, std::string format=std::string(), size_t buffer_size=0);
+		static std::unique_ptr<SimpleSharedRingBuffer> create(const std::string& name, boost::interprocess::mode_t mode, std::string format=std::string(), size_t buffer_size=0);
 
 		/*
 		 * Open a shared memory buffer
 		 */
-		static std::unique_ptr<SharedRingBuffer> open(const std::string& name, boost::interprocess::mode_t mode);
+		static std::unique_ptr<SimpleSharedRingBuffer> open(const std::string& name, boost::interprocess::mode_t mode);
 
 
 		/*
 		 * Destructor!
 		 */
-		~SharedRingBuffer();
+		~SimpleSharedRingBuffer();
 
 		/*
 		 * Ignore history and move current pointer to end.
@@ -91,9 +91,19 @@ class SharedRingBuffer
 		size_t getSamplesLeft();
 
 		/*
-		 * Call getPointer() before calling this function!
+		 * Get number of new samples in the ring buffer and move the reading
+		 * location forward.
+		 *
+		 * params:
+		 *    maxElems:    Maxmimum number of elements/items to be read
+		 *    timestamp:   Sampling time of the next
+		 * returns:
+		 *    Number of available samples in the buffer
+		 * note:
+		 *    Call getPointer() before calling this function!
+		 * takes
 		 */
-		size_t read(size_t maxElems);
+		size_t read(size_t maxElems, long long& timestamp);
 
 		/*
 		 * Return pointer to current read/write position
@@ -137,7 +147,7 @@ class SharedRingBuffer
 		void setCenterFrequency(double frequency);
 
 		/*
-		 * Return center frequency
+		 * Return center frequency of the sample stream
 		 */
 		double getCenterFrequency() const {
 			assert(ctrl != NULL);
@@ -145,12 +155,12 @@ class SharedRingBuffer
 		}
 
 		/*
-		 * Return center frequency
+		 * Set stream sample rate
 		 */
 		void setSampleRate(double rate);
 
 		/*
-		 * Return center frequency
+		 * Return stream sample rate
 		 */
 		double getSampleRate() const {
 			assert(ctrl != NULL);
@@ -173,7 +183,7 @@ class SharedRingBuffer
 		void releaseWriteLock();
 
 		/*
-		 *
+		 * Returns the global write mutex for the buffer
 		 */
 		boost::interprocess::interprocess_mutex& write_mutex() {
 			assert(ctrl != NULL);
@@ -189,20 +199,19 @@ class SharedRingBuffer
 		/*
 		 * Stream opetator to print the buffer description
 		 */
-		friend std::ostream& operator<<(std::ostream& stream, const SharedRingBuffer& buf);
+		friend std::ostream& operator<<(std::ostream& stream, const SimpleSharedRingBuffer& buf);
 
 	private:
-
 		/*
 		 * This contructor is private!
-		 * SharedRingBuffer::open() and SharedRingBuffer::create() should be used
+		 * SimpleSharedRingBuffer::open() and SimpleSharedRingBuffer::create() should be used
 		 */
-		SharedRingBuffer(std::string name);
+		SimpleSharedRingBuffer(std::string name);
 
 		void mapBuffer(boost::interprocess::mode_t mode);
 
-		//SharedRingBuffer(SharedRingBuffer && moved) { }
-		//SharedRingBuffer& operator=(SharedRingBuffer && moved) { }
+		//SimpleSharedRingBuffer(SimpleSharedRingBuffer && moved) { }
+		//SimpleSharedRingBuffer& operator=(SimpleSharedRingBuffer && moved) { }
 
 		std::string name;
 		size_t datasize, buffer_size;
@@ -214,7 +223,7 @@ class SharedRingBuffer
 		void* buffer;
 
 		size_t prev, version;
-		bool created;
+		bool owner;
 };
 
 #endif /* __SHARED_RING_BUFFER_H__ */

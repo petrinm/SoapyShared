@@ -89,7 +89,7 @@ struct BufferControl {
 };
 
 
-class SharedTimestampedRingBuffer
+class TimestampedSharedRingBuffer
 {
 	public:
 
@@ -105,18 +105,18 @@ class SharedTimestampedRingBuffer
 		/*
 		 * Create a new shared memory buffer
 		 */
-		static std::unique_ptr<SharedTimestampedRingBuffer> create(const std::string& name, boost::interprocess::mode_t mode, std::string format=std::string(), size_t n_blocks=0, size_t block_size=0);
+		static std::unique_ptr<TimestampedSharedRingBuffer> create(const std::string& name, boost::interprocess::mode_t mode, std::string format=std::string(), size_t n_blocks=0, size_t block_size=0);
 
 		/*
 		 * Open a shared memory buffer
 		 */
-		static std::unique_ptr<SharedTimestampedRingBuffer> open(const std::string& name, boost::interprocess::mode_t mode);
+		static std::unique_ptr<TimestampedSharedRingBuffer> open(const std::string& name, boost::interprocess::mode_t mode);
 
 
 		/*
 		 * Destructor!
 		 */
-		~SharedTimestampedRingBuffer();
+		~TimestampedSharedRingBuffer();
 
 		/*
 		 * Ignore history and move current pointer to end.
@@ -251,7 +251,7 @@ class SharedTimestampedRingBuffer
 		/*
 		 * Stream opetator to print the buffer description
 		 */
-		friend std::ostream& operator<<(std::ostream& stream, const SharedTimestampedRingBuffer& buf);
+		friend std::ostream& operator<<(std::ostream& stream, const TimestampedSharedRingBuffer& buf);
 
 		const BufferControl& getCtrl() const {
 			return *ctrl;
@@ -268,14 +268,14 @@ class SharedTimestampedRingBuffer
 
 		/*
 		 * This contructor is private!
-		 * SharedTimestampedRingBuffer::open() and SharedTimestampedRingBuffer::create() should be used
+		 * TimestampedSharedRingBuffer::open() and TimestampedSharedRingBuffer::create() should be used
 		 */
-		SharedTimestampedRingBuffer(std::string name);
+		TimestampedSharedRingBuffer(std::string name);
 
 		void mapBuffer(size_t location, boost::interprocess::mode_t mode);
 
-		//SharedTimestampedRingBuffer(SharedTimestampedRingBuffer && moved) { }
-		//SharedTimestampedRingBuffer& operator=(SharedTimestampedRingBuffer && moved) { }
+		//TimestampedSharedRingBuffer(TimestampedSharedRingBuffer && moved) { }
+		//TimestampedSharedRingBuffer& operator=(TimestampedSharedRingBuffer && moved) { }
 
 		std::string name;
 		size_t datasize;
@@ -293,6 +293,6 @@ class SharedTimestampedRingBuffer
 		bool owner;
 };
 
-std::ostream& operator<<(std::ostream& stream, const SharedTimestampedRingBuffer& buf);
+std::ostream& operator<<(std::ostream& stream, const TimestampedSharedRingBuffer& buf);
 
 #endif /* __SHARED_TIMESTAMPED_RING_BUFFER_H__ */
