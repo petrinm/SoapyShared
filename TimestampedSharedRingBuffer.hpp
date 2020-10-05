@@ -1,5 +1,5 @@
-#ifndef __SHARED_TIMESTAMPED_RING_BUFFER_H__
-#define __SHARED_TIMESTAMPED_RING_BUFFER_H__
+#ifndef __TIMESTAMPED_SHARED_RING_BUFFER_H__
+#define __TIMESTAMPED_SHARED_RING_BUFFER_H__
 
 #include <string>
 #include <memory>
@@ -129,9 +129,31 @@ class TimestampedSharedRingBuffer
 		size_t getSamplesAvailable();
 
 		/*
-		 * Get number of samples till end of the buffer
+		 * Get number of samples that can be written to TX position
 		 */
 		size_t getSamplesLeft();
+
+		/*
+		 * Return pointer to current read/write position
+		 */
+		template<typename T> T* getWritePointer() {
+			return static_cast<T*>(buffers[0] + datasize * ctrl->end);
+		}
+		template<typename T> void getWritePointers(T* ptrs[]) {
+			for (size_t ch = 0; ch < ctrl->n_channels; ch++)
+				ptrs[ch] =  static_cast<T*>(buffers[ch] + datasize * ctrl->end);
+		}
+
+		/*
+		 * Return pointer to current read/write position
+		 */
+		template<typename T> T* getReadPointer() {
+			return static_cast<T*>(buffers[0] + datasize * prev);
+		}
+		template<typename T> void getReadPointers(T* ptrs[]) {
+			for (size_t ch = 0; ch < ctrl->n_channels; ch++)
+				ptrs[ch] =  static_cast<T*>(buffers[ch] + datasize * prev);
+		}
 
 		/*
 		 * Call getPointer() before calling this function!
@@ -143,36 +165,11 @@ class TimestampedSharedRingBuffer
 		 */
 		long long getTimestamp();
 
-		/*
-		 * Return pointer to current read/write position
-		 */
-		template<typename T> T* getWritePointer() {
-			return static_cast<T*>(buffers[0] + datasize * ctrl->end);
-		}
-
-		template<typename T> T* getWritePointers(T* ptrs[]) {
-			for (size_t ch = 0; ch < ctrl->n_channels; ch++)
-				ptrs[ch] =  static_cast<T*>(buffers[ch] + datasize * ctrl->end);
-		}
-
-		template<typename T> T* getReadPointer() {
-			return static_cast<T*>(buffers[0] + datasize * prev);
-		}
-
-		template<typename T> void getReadPointers(T* ptrs[]) {
-			for (size_t ch = 0; ch < ctrl->n_channels; ch++)
-				ptrs[ch] =  static_cast<T*>(buffers[ch] + datasize * prev);
-		}
 
 		/*
 		 * Move end torwards
 		 */
 		void moveEnd(size_t numItems);
-
-		/*
-		 * Move beginning torwards
-		 */
-		void moveBeginning(size_t numItems);
 
 		/*
 		 * Get format string
@@ -295,4 +292,4 @@ class TimestampedSharedRingBuffer
 
 std::ostream& operator<<(std::ostream& stream, const TimestampedSharedRingBuffer& buf);
 
-#endif /* __SHARED_TIMESTAMPED_RING_BUFFER_H__ */
+#endif /* __TIMESTAMPED_SHARED_RING_BUFFER_H__ */

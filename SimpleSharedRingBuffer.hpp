@@ -1,5 +1,5 @@
-#ifndef __SHARED_RING_BUFFER_H__
-#define __SHARED_RING_BUFFER_H__
+#ifndef __SIMPLE_SHARED_RING_BUFFER_H__
+#define __SIMPLE_SHARED_RING_BUFFER_H__
 
 #include <string>
 #include <memory>
@@ -13,6 +13,7 @@
 #include <boost/interprocess/sync/interprocess_mutex.hpp>
 #include <boost/interprocess/sync/interprocess_condition.hpp>
 
+
 /*
  *
  */
@@ -22,7 +23,6 @@ enum BufferState {
 	Streaming,
 	EndOfBurst,
 };
-
 
 /*
  * Control structure which lives in the beginning of the SHM
@@ -34,10 +34,10 @@ struct BufferControl {
 	size_t end; // Current position on the stream
 
 	// Metadata for streamed data
-	unsigned int version;			// Revision number of these settings
-	char format[6]; 			// Data format string
-	double center_frequency;	// Center frequency
-	double sample_rate;			// Sample rate of the stream
+	unsigned int version;       // Revision number of these settings
+	char format[6];             // Data format string
+	double center_frequency;    // Center frequency
+	double sample_rate;         // Sample rate of the stream
 	enum BufferState state;
 
 	boost::interprocess::interprocess_mutex write_mutex;
@@ -86,9 +86,29 @@ class SimpleSharedRingBuffer
 		size_t getSamplesAvailable();
 
 		/*
-		 * Get number of samples till end of the buffer
+		 * Get number of samples that can be written to TX position
 		 */
 		size_t getSamplesLeft();
+
+		/*
+		 * Return pointer to current write position
+		 */
+		template<typename T> T* getWritePointer() {
+			return static_cast<T*>(buffer + datasize * ctrl->end);
+		}
+		template<typename T> void getWritePointers(T* ptrs[]) {
+			ptrs[0] =  static_cast<T*>(buffer + datasize * ctrl->end);
+		}
+
+		/*
+		 * Return pointer to current read position
+		 */
+		template<typename T> T* getReadPointer() {
+			return static_cast<T*>(buffer + datasize * prev);
+		}
+		template<typename T> void getReadPointers(T* ptrs[]) {
+			ptrs[0] =  static_cast<T*>(buffer + datasize * prev);
+		}
 
 		/*
 		 * Get number of new samples in the ring buffer and move the reading
@@ -106,25 +126,9 @@ class SimpleSharedRingBuffer
 		size_t read(size_t maxElems, long long& timestamp);
 
 		/*
-		 * Return pointer to current read/write position
-		 */
-		template<typename T> T* getWritePointer() {
-			return static_cast<T*>(buffer + datasize * ctrl->end);
-		}
-
-		template<typename T> T* getReadPointer() {
-			return static_cast<T*>(buffer + datasize * prev);
-		}
-
-		/*
 		 * Move end torwards
 		 */
 		void moveEnd(size_t numItems);
-
-		/*
-		 * Move beginning torwards
-		 */
-		void moveBeginning(size_t numItems);
 
 		/*
 		 * Get format string
@@ -226,4 +230,4 @@ class SimpleSharedRingBuffer
 		bool owner;
 };
 
-#endif /* __SHARED_RING_BUFFER_H__ */
+#endif /* __SIMPLE_SHARED_RING_BUFFER_H__	 */

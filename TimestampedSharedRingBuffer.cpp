@@ -62,6 +62,7 @@ unique_ptr<TimestampedSharedRingBuffer> TimestampedSharedRingBuffer::create(cons
 	inst->owner = true;
 	inst->shm = shared_memory_object(open_or_create, name.c_str(), mode); // TODO: should be create_only to be sure
 	inst->shm.truncate(control_size + n_channels * inst->datasize * n_blocks * block_size);
+
 	inst->n_blocks = n_blocks;
 	inst->block_size = block_size;
 	inst->buffer_size = n_blocks * block_size;
@@ -288,8 +289,11 @@ size_t TimestampedSharedRingBuffer::getSamplesAvailable() {
 
 
 size_t TimestampedSharedRingBuffer::getSamplesLeft() {
+#ifdef SUPPORT_LOOPING
+	return buffer_size / 2;
+#else
 	return (buffer_size - ctrl->end);
-	//return (n_buffer - ctrl->end);
+#endif
 }
 
 
@@ -355,8 +359,15 @@ size_t TimestampedSharedRingBuffer::read(size_t maxElems, long long& timestamp) 
 
 
 void TimestampedSharedRingBuffer::moveEnd(size_t numItems) {
-	size_t new_pos = ctrl->end + numItems;
+
+#ifdef SUPPORT_LOOPING
+	size_t new_pos = (ctrl->end + numItems) % buffer_size;
+#else
+	assert(ctrl->end + numItems <= buffer_size);
+	size_t new_pos = (ctrl->end + numItems);
 	if (new_pos >= buffer_size) new_pos = 0;
+#endif
+
 	//cerr << "end = " << ctrl->end << "; new_pos = " << new_pos << endl;
 	ctrl->end = new_pos;
 	ctrl->cond_new_data.notify_all();
@@ -402,20 +413,14 @@ void TimestampedSharedRingBuffer::wait(unsigned int timeoutUs) {
 	assert(ctrl != NULL);
 
 	ptime abs_timeout = boost::get_system_time() + microseconds(timeoutUs);
-	cout << 2;
 	boost::interprocess::scoped_lock<interprocess_mutex> data_lock(ctrl->data_mutex, abs_timeout);
-	cout << 3;
 	ctrl->cond_new_data.timed_wait(data_lock, abs_timeout);
-	cout << 4;
 }
 
 void TimestampedSharedRingBuffer::wait(const boost::posix_time::ptime& abs_timeout) {
 	assert(ctrl != NULL);
-	cout << 7;
 	boost::interprocess::scoped_lock<interprocess_mutex> data_lock(ctrl->data_mutex, abs_timeout);
-	cout << 8;
 	ctrl->cond_new_data.timed_wait(data_lock, abs_timeout);
-	cout << 9;
 }
 
 

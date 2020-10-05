@@ -1,5 +1,6 @@
 #include <SoapySDR/Device.hpp>
 #include <SoapySDR/Registry.hpp>
+
 #include "TimestampedSharedRingBuffer.hpp"
 
 #include <boost/filesystem.hpp>
@@ -225,7 +226,7 @@ public:
 		void* read_pointers[n_channels];
 
 		while (wanted_samples > 0) {
-			//cout << "wanted_samples " << wanted_samples << endl;
+			cout << "wanted_samples " << dec << wanted_samples << endl;
 
 			// How much new data is available?
 			rx_buffer->getReadPointers<void>(read_pointers);
@@ -247,6 +248,7 @@ public:
 				const liquid_float_complex* input = static_cast<const liquid_float_complex*>(read_pointers[ch]);
 				liquid_float_complex* output = static_cast<liquid_float_complex*>(buffs[ch]);
 
+				unsigned int r = 0;
 				// Process the samples one by one
 				for (size_t k = 0; k < samples_available; k++) {
 
@@ -257,11 +259,12 @@ public:
 					// Resample and store the new samples
 					resamp_crcf_execute(resampler, s, &output[n_samples], &n_resamples);
 
-					//cout << k << "  > " << n_resamples << endl;
 					n_samples += n_resamples;
+					r += n_resamples;
 				}
+				cout << samples_available << " -> " << r << endl;
 			}
-			//cout << "n_samples" << n_samples << endl;
+			cout << "n_samples " << dec << n_samples << endl;
 
 
 			if (boost::get_system_time() >= abs_timeout)

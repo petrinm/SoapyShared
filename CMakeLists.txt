@@ -70,6 +70,6 @@ message(STATUS "Liquid-DSP libraries: ${LIQUID_LIBRARIES}")
 ########################################################################
 SOAPY_SDR_MODULE_UTIL(
     TARGET SoapyShared
-    SOURCES SoapySeeder.cpp SoapyLeecher.cpp TimestampedSharedRingBuffer.cpp
+    SOURCES SoapySeeder.cpp SoapyLeecher.cpp SimpleSharedRingBuffer.cpp TimestampedSharedRingBuffer.cpp AutoTx.cpp
     LIBRARIES ${SOAPY_SHARED_LIBRARIES}
 )

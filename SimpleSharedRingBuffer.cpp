@@ -222,7 +222,11 @@ size_t SimpleSharedRingBuffer::getSamplesAvailable() {
 
 
 size_t SimpleSharedRingBuffer::getSamplesLeft() {
+#ifdef SUPPORT_LOOPING
+	return buffer_size / 2;
+#else
 	return (buffer_size - ctrl->end);
+#endif
 }
 
 

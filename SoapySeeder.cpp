@@ -3,6 +3,7 @@
 #include <SoapySDR/ConverterRegistry.hpp>
 
 #include "TimestampedSharedRingBuffer.hpp"
+#include "AutoTx.hpp"
 
 #include <complex>
 #include <stdexcept>
@@ -678,7 +679,6 @@ private:
 	boost::thread tx_thread;
 };
 
-void* transmitter_thread(void* p) { }
 /***********************************************************************
  * Find available devices
  **********************************************************************/
