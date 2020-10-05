@@ -2,7 +2,7 @@
 #include <SoapySDR/Registry.hpp>
 #include <SoapySDR/ConverterRegistry.hpp>
 
-#include "SharedTimestampedRingBuffer.hpp"
+#include "TimestampedSharedRingBuffer.hpp"
 
 #include <complex>
 #include <stdexcept>
@@ -117,7 +117,7 @@ public:
 
 		if (direction == SOAPY_SDR_RX) {
 
-			rx_buffer = SharedTimestampedRingBuffer::create(shm, boost::interprocess::read_write, format, n_blocks, block_size);
+			rx_buffer = TimestampedSharedRingBuffer::create(shm, boost::interprocess::read_write, format, n_blocks, block_size);
 
 			rx_buffer->sync();
 			rx_buffer->setCenterFrequency(slave->getFrequency(SOAPY_SDR_RX, 0));
@@ -665,7 +665,7 @@ public:
 private:
 	string shm;
 
-	unique_ptr<SharedTimestampedRingBuffer> rx_buffer, tx_buffer;
+	unique_ptr<TimestampedSharedRingBuffer> rx_buffer, tx_buffer;
 	unique_ptr<SoapySDR::Device> slave;
 
 	SoapySDR::ConverterRegistry::ConverterFunction converter;

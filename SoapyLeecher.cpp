@@ -1,6 +1,6 @@
 #include <SoapySDR/Device.hpp>
 #include <SoapySDR/Registry.hpp>
-#include "SharedTimestampedRingBuffer.hpp"
+#include "TimestampedSharedRingBuffer.hpp"
 
 #include <boost/filesystem.hpp>
 
@@ -39,12 +39,12 @@ public:
 
 
 		// Open shared memory buffer
-		rx_buffer = SharedTimestampedRingBuffer::open(shm, boost::interprocess::read_write); // TODO: R&W right required for some reason..
+		rx_buffer = TimestampedSharedRingBuffer::open(shm, boost::interprocess::read_write); // TODO: R&W right required for some reason..
 
 		cout << *rx_buffer;
 
-		if (SharedTimestampedRingBuffer::checkSHM(shm + "_tx"))
-			tx_buffer = SharedTimestampedRingBuffer::open(shm + "_tx", boost::interprocess::read_write);
+		if (TimestampedSharedRingBuffer::checkSHM(shm + "_tx"))
+			tx_buffer = TimestampedSharedRingBuffer::open(shm + "_tx", boost::interprocess::read_write);
 
 		lo_nco = nco_crcf_create(LIQUID_VCO);
 		//resampler = msresamp_crcf_create(1, 30);
@@ -496,7 +496,7 @@ public:
 
 private:
 	string shm;
-	unique_ptr<SharedTimestampedRingBuffer> rx_buffer, tx_buffer;
+	unique_ptr<TimestampedSharedRingBuffer> rx_buffer, tx_buffer;
 
 	double center_frequency, sample_rate;
 	double resampl_rate;
@@ -545,7 +545,7 @@ SoapySDR::KwargsList findLeecher(const SoapySDR::Kwargs &args)
 			continue;
 
 		// Try to open the Shared Memory buffer to get details
-		if (SharedTimestampedRingBuffer::checkSHM(shm_name) == false)
+		if (TimestampedSharedRingBuffer::checkSHM(shm_name) == false)
 			continue;
 
 		// Report back!
