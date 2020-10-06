@@ -2,7 +2,7 @@
 #include <SoapySDR/Registry.hpp>
 #include <SoapySDR/ConverterRegistry.hpp>
 
-#include "TimestampedSharedRingBuffer.hpp"
+
 #include "AutoTx.hpp"
 
 #include <complex>
@@ -17,7 +17,13 @@
 
 using namespace std;
 
-void* transmitter_thread(void* p);
+#ifdef TIMESTAMPING
+#include "TimestampedSharedRingBuffer.hpp"
+typedef TimestampedSharedRingBuffer SharedRingBuffer;
+#else
+#include "SimpleSharedRingBuffer.hpp"
+typedef SimpleSharedRingBuffer SharedRingBuffer;
+#endif
 
 /***********************************************************************
  * Device interface
@@ -118,7 +124,11 @@ public:
 
 		if (direction == SOAPY_SDR_RX) {
 
+#ifdef TIMESTAMPING
 			rx_buffer = TimestampedSharedRingBuffer::create(shm, boost::interprocess::read_write, format, n_blocks, block_size);
+#else
+			rx_buffer = SimpleSharedRingBuffer::create(shm, boost::interprocess::read_write, format, n_blocks * block_size);
+#endif
 
 			rx_buffer->sync();
 			rx_buffer->setCenterFrequency(slave->getFrequency(SOAPY_SDR_RX, 0));
@@ -168,7 +178,7 @@ public:
 	int activateStream(SoapySDR::Stream *stream, const int flags=0, const long long timeNs=0, const size_t numElems=0) {
 		cerr << "activateStream(" << flags << ", " << timeNs << ", " << numElems << ")" << endl;
 		if (stream == rx) {
-			rx_buffer->acquireWriteLock();
+			//rx_buffer->acquireWriteLock();
 		}
 		else if (stream == tx) {
 
@@ -191,47 +201,82 @@ public:
 
 		if (stream == rx) {
 
+#ifdef TIMESTAMPING
+			/*
+			 * Timestamped reading (multiple channels, timestamping, )
+			 */
+
 			// Limit number of samples to avoid overflow
-			size_t readElems = min(rx_buffer->getSamplesLeft(),  numElems);
+			size_t readElems = numElems;
 
-			// Suboptimal buffer size? Adjust buffer size?
-			//if (readElems < numElems)
-			//	cerr << "§";
+			// Require alignment!
+			if (readElems % rx_buffer->getCtrl().block_size != 0) {
+				cerr << "numElems " << readElems << " is not a nice number!" << endl;
+				readElems -= (readElems % rx_buffer->getCtrl().block_size);
+				assert(readElems > 0);
+			}
 
+			unsigned read_samples = 0;
+			const size_t block_size = rx_buffer->getCtrl().block_size;
 			const unsigned n_channels = 1;
-
 			void* shmbuffs[n_channels];
-			rx_buffer->getWritePointers<void>(shmbuffs);
 
-			// Read the real stream
-			int ret = slave->readStream(stream, shmbuffs, readElems, flags, timeNs, timeoutUs);
-			if (ret <= 0)
-				return ret;
+			while (read_samples < readElems) {
 
-			//if (numElemnt % block_size != 0) {}
+				// Read the real stream in block size pieces to SHM
+				rx_buffer->getWritePointers<void>(shmbuffs);
+				int ret = slave->readStream(stream, shmbuffs, block_size, flags, timeNs, timeoutUs);
+				if (ret <= 0)
+					return ret;
+
+				// Require that slave returns wanted amount of samples
+				assert(read_samples == block_size);
+
+				// Indicate availibility of new data in the buffer
+				rx_buffer->write(ret, timeNs);
+
+				// Copy data also to caller's buffer
+				for (unsigned ch = 0; ch < n_channels; ch++)
+					memcpy(buffs[ch], shmbuffs[ch], rx_buffer->getDatasize() * ret);
+
+				read_samples += read_samples;
+			}
 
 #ifdef DEBUG
 			cerr << hex << *shmbuffs << dec << endl;
-			cerr << "numElems = " << numElems << "; readElems = " << readElems << endl;
-			cerr << "ret = " << ret << endl;
+			cerr << "numElems = " << numElems << "; read_samples = " << read_samples << endl;
 #endif
+			return read_samples;
+#else
+			/*
+			 * Simplified receive (single channel, no blocks, no timestampping)
+			 */
 
-			rx_buffer->moveEnd(ret); // Move the end!
+			// Limit number of samples to avoid overflow
+			size_t readElems = min(rx_buffer->getSamplesLeft(), numElems);
+			void* shm_buffs[1];
+			rx_buffer->getWritePointers<void>(shm_buffs);
 
-			//cerr << endl;
-			// Read more?
-			if (0 && readElems < numElems) {
-				//
-			}
+			// Read the real stream
+			int read_samples = slave->readStream(stream, shm_buffs, readElems, flags, timeNs, timeoutUs);
+			if (read_samples <= 0)
+				return read_samples;
+
+			//if (converter)
+
+			// Indicate availibility of new data in the buffer
+			rx_buffer->write(read_samples, timeNs);
 
 			// Copy data also to caller's buffer
-			for (unsigned ch = 0; ch < n_channels; ch++) {
-				memcpy(buffs[ch], shmbuffs[ch], rx_buffer->getDatasize() * ret);
-			}
+			memcpy(buffs[0], shm_buffs[0], rx_buffer->getDatasize() * read_samples);
 
-			//if (flags)  UHD gives
-			//	cerr << "Flags!" << flags << endl;
-			return ret;
+#ifdef DEBUG
+			cerr << hex << shm_buffs[0] << dec << endl;
+			cerr << "numElems = " << numElems << "; read_samples = " << read_samples << endl;
+#endif
+
+			return read_samples;
+#endif
 		}
 
 		return 0;
@@ -268,7 +313,9 @@ public:
 	}
 
 	void setFrequency(const int direction, const size_t channel, const double frequency, const SoapySDR::Kwargs &args=SoapySDR::Kwargs()) {
+#ifdef DEBUG
 		cerr << "setFrequency(" << direction << "," << channel << "," << frequency << ")" << endl;
+#endif
 		slave->setFrequency(direction, channel, frequency, args);
 		if (direction == SOAPY_SDR_RX && rx_buffer.get() != nullptr)
 			rx_buffer->setCenterFrequency(frequency);
@@ -276,6 +323,9 @@ public:
 	}
 
 	void setSampleRate(const int direction, const size_t channel, const double rate) {
+#ifdef DEBUG
+		cerr << "setSampleRate(" << direction << "," << channel << "," << rate << ")" << endl;
+#endif
 		slave->setSampleRate(direction, channel, rate);
 		if (direction == SOAPY_SDR_RX && rx_buffer)
 			rx_buffer->setSampleRate(rate);
@@ -666,7 +716,7 @@ public:
 private:
 	string shm;
 
-	unique_ptr<TimestampedSharedRingBuffer> rx_buffer, tx_buffer;
+	unique_ptr<SharedRingBuffer> rx_buffer, tx_buffer;
 	unique_ptr<SoapySDR::Device> slave;
 
 	SoapySDR::ConverterRegistry::ConverterFunction converter;

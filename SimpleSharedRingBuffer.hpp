@@ -124,12 +124,13 @@ class SimpleSharedRingBuffer
 		 * takes
 		 */
 		size_t read(size_t maxElems, long long& timestamp);
+		size_t read(void* buff, size_t maxElems, long long& timestamp);
 
 		/*
-		 * Move end torwards
+		 * Write items to buffer and move the end pointer torwards
 		 */
-		void moveEnd(size_t numItems);
-
+		void write(size_t numItems, long long timestamp);
+		void write(void* buff, size_t numElems, long long timestamp);
 		/*
 		 * Get format string
 		 */
@@ -204,6 +205,10 @@ class SimpleSharedRingBuffer
 		 * Stream opetator to print the buffer description
 		 */
 		friend std::ostream& operator<<(std::ostream& stream, const SimpleSharedRingBuffer& buf);
+
+		const BufferControl& getCtrl() const {
+			return *ctrl;
+		}
 
 	private:
 		/*

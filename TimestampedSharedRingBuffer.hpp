@@ -167,9 +167,9 @@ class TimestampedSharedRingBuffer
 
 
 		/*
-		 * Move end torwards
+		 * Write items to buffer and move the end pointer torwards
 		 */
-		void moveEnd(size_t numItems);
+		void write(size_t numItems, long long timestamp);
 
 		/*
 		 * Get format string
@@ -253,6 +253,7 @@ class TimestampedSharedRingBuffer
 		const BufferControl& getCtrl() const {
 			return *ctrl;
 		}
+
 	private:
 
 		/*

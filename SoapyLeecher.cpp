@@ -1,7 +1,6 @@
 #include <SoapySDR/Device.hpp>
 #include <SoapySDR/Registry.hpp>
 
-#include "TimestampedSharedRingBuffer.hpp"
 
 #include <boost/filesystem.hpp>
 
@@ -16,10 +15,20 @@
 
 #include <liquid/liquid.h>
 
+#ifdef TIMESTAMPING
+#include "TimestampedSharedRingBuffer.hpp"
+typedef TimestampedSharedRingBuffer SharedRingBuffer;
+#else
+#include "SimpleSharedRingBuffer.hpp"
+typedef SimpleSharedRingBuffer SharedRingBuffer;
+#endif
+
+
 using namespace std;
 
 static SoapySDR::Stream* const TX_STREAM = (SoapySDR::Stream*) 0x81;
 static SoapySDR::Stream* const RX_STREAM = (SoapySDR::Stream*) 0x82;
+
 
 /***********************************************************************
  * Device interface
@@ -40,12 +49,12 @@ public:
 
 
 		// Open shared memory buffer
-		rx_buffer = TimestampedSharedRingBuffer::open(shm, boost::interprocess::read_write); // TODO: R&W right required for some reason..
+		rx_buffer = SharedRingBuffer::open(shm, boost::interprocess::read_write); // TODO: R&W right required for some reason..
 
 		cout << *rx_buffer;
 
-		if (TimestampedSharedRingBuffer::checkSHM(shm + "_tx"))
-			tx_buffer = TimestampedSharedRingBuffer::open(shm + "_tx", boost::interprocess::read_write);
+		if (SharedRingBuffer::checkSHM(shm + "_tx"))
+			tx_buffer = SharedRingBuffer::open(shm + "_tx", boost::interprocess::read_write);
 
 		lo_nco = nco_crcf_create(LIQUID_VCO);
 		//resampler = msresamp_crcf_create(1, 30);
@@ -213,7 +222,7 @@ public:
 		unsigned n_samples = 0, n_resamples = 0;
 		unsigned int wanted_samples = ceil(numElems * resampl_rate);
 
-		cout << "resampledReadStream " << numElems << " " << resampl_rate << " " << wanted_samples << endl;
+		cout << "resampledReadStream " << dec << numElems << " " << resampl_rate << " " << wanted_samples << endl;
 
 		// Limit wanted sample count if its crazy
 		//if (wanted_samples > rx_buffer->getCtrl().buffer_size / 2)
@@ -238,6 +247,8 @@ public:
 			// First iterate for each rx channel (more cache friendly)
 			unsigned int original_sample_pos = n_samples;
 			double original_phase = nco_crcf_get_phase(lo_nco);
+			unsigned int new_resamples = 0;
+
 			for (size_t ch = 0; ch < n_channels; ch++) {
 
 				// Reset some of the variables for each channel
@@ -248,7 +259,7 @@ public:
 				const liquid_float_complex* input = static_cast<const liquid_float_complex*>(read_pointers[ch]);
 				liquid_float_complex* output = static_cast<liquid_float_complex*>(buffs[ch]);
 
-				unsigned int r = 0;
+				new_resamples = 0;
 				// Process the samples one by one
 				for (size_t k = 0; k < samples_available; k++) {
 
@@ -260,10 +271,11 @@ public:
 					resamp_crcf_execute(resampler, s, &output[n_samples], &n_resamples);
 
 					n_samples += n_resamples;
-					r += n_resamples;
+					new_resamples += n_resamples;
 				}
-				cout << samples_available << " -> " << r << endl;
+				cout << samples_available << " -> " << new_resamples << endl;
 			}
+			wanted_samples -= samples_available;
 			cout << "n_samples " << dec << n_samples << endl;
 
 
@@ -300,8 +312,10 @@ public:
 
 
 			cerr << endl << "ReadStream " << numElems << endl;
+#ifdef TIMESTAMPING
 			if (numElems % rx_buffer->getCtrl().block_size != 0)
-				cerr << "numElems " << numElems << " is not a nice number " << endl;
+				cerr << "numElems " << numElems << " is not a nice number!" << endl;
+#endif
 
 			// Calculate absolute timeout time
 			boost::posix_time::ptime abs_timeout = boost::get_system_time() + boost::posix_time::microseconds(timeoutUs);
@@ -367,19 +381,34 @@ public:
 				return SOAPY_SDR_STREAM_ERROR;
 
 			// if (flags & SOAPY_SDR_END_BURST)
+#if 0
+			// TODO: Work-in-progress code..
+			const size_t n_channels = tx_buffer->getNumChannels();
+			void* write_pointers[n_channels];
+			tx_buffer->getWritePointers(write_pointers);
+
+			size_t samples_written = min(tx_buffer->getSamplesLeft(),  numElems);
+
+			for (size_t ch = 0; ch < n_channels; ch++) {
+				memcpy(write_pointers[ch], buffs[ch], samples_written * tx_buffer->getDatasize());
+			}
+#else
 
 			// First write!
-			size_t first_write = min(rx_buffer->getSamplesLeft(),  numElems);
-			memcpy(tx_buffer->getWritePointer<void>(), *buffs, first_write * tx_buffer->getDatasize());
-			tx_buffer->moveEnd(first_write); // Move the end!
+			size_t samples_written = min(tx_buffer->getSamplesLeft(),  numElems);
+			memcpy(tx_buffer->getWritePointer<void>(), *buffs, samples_written * tx_buffer->getDatasize());
+			tx_buffer->write(samples_written, 0);
 
-			// Second write if overflow happend
-			if (first_write < numElems) {
+#ifndef SUPPORT_LOOPING
+			// If looped memory space is not used a second write might be necessary
+			if (samples_written < numElems) {
 				cerr << '%' << endl;
-				memcpy(tx_buffer->getWritePointer<void>(), *buffs, first_write * tx_buffer->getDatasize());
-				tx_buffer->moveEnd(numElems - first_write); // Move the end!
+				samples_written = min(tx_buffer->getSamplesLeft(),  numElems);
+				memcpy(tx_buffer->getWritePointer<void>(), *buffs, samples_written * tx_buffer->getDatasize());
+				tx_buffer->write(numElems - samples_written, 0);
 			}
-
+#endif
+#endif
 			// TODO: Some sort of rate control would be nice!
 			//tx_buffer->wait();
 			//usleep((0.5 * numElems) * (1000000 / tx_buffer->getSampleRate()));
@@ -499,7 +528,7 @@ public:
 
 private:
 	string shm;
-	unique_ptr<TimestampedSharedRingBuffer> rx_buffer, tx_buffer;
+	unique_ptr<SharedRingBuffer> rx_buffer, tx_buffer;
 
 	double center_frequency, sample_rate;
 	double resampl_rate;
@@ -548,7 +577,7 @@ SoapySDR::KwargsList findLeecher(const SoapySDR::Kwargs &args)
 			continue;
 
 		// Try to open the Shared Memory buffer to get details
-		if (TimestampedSharedRingBuffer::checkSHM(shm_name) == false)
+		if (SharedRingBuffer::checkSHM(shm_name) == false)
 			continue;
 
 		// Report back!

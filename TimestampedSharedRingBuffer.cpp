@@ -279,25 +279,29 @@ TimestampedSharedRingBuffer::~TimestampedSharedRingBuffer() {
 
 
 void TimestampedSharedRingBuffer::sync() {
+	assert(ctrl != NULL);
 	prev = ctrl->end;
 }
 
 
 size_t TimestampedSharedRingBuffer::getSamplesAvailable() {
+	assert(ctrl != NULL);
 	return (ctrl->end < prev) ? (buffer_size - prev) : (ctrl->end - prev);
 }
 
 
 size_t TimestampedSharedRingBuffer::getSamplesLeft() {
+	assert(ctrl != NULL);
 #ifdef SUPPORT_LOOPING
 	return buffer_size / 2;
 #else
-	return (buffer_size - ctrl->end);
+	return min(buffer_size - ctrl->end, buffer_size / 2);
 #endif
 }
 
 
 size_t TimestampedSharedRingBuffer::read(size_t maxElems, long long& timestamp) {
+	assert(ctrl != NULL);
 
 	size_t samples_available;
 	size_t nextp = ctrl->end;
@@ -358,7 +362,14 @@ size_t TimestampedSharedRingBuffer::read(size_t maxElems, long long& timestamp) 
 }
 
 
-void TimestampedSharedRingBuffer::moveEnd(size_t numItems) {
+void TimestampedSharedRingBuffer::write(size_t numItems, long long timestamp) {
+
+#if 1
+	if (ctrl->end % ctrl->block_size != 0) {
+		cerr << "Writing are not aligned. Forcing alignment!" << endl;
+		ctrl->end = round_up(ctrl->end, ctrl->block_size);
+	}
+#endif
 
 #ifdef SUPPORT_LOOPING
 	size_t new_pos = (ctrl->end + numItems) % buffer_size;

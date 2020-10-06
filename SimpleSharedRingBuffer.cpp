@@ -39,13 +39,13 @@ unique_ptr<SimpleSharedRingBuffer> SimpleSharedRingBuffer::create(const string& 
 		throw runtime_error("Invalid datasize!");
 
 	// Create new buffer
-	inst->shm = shared_memory_object(create_only, name.c_str(), mode);
+	inst->shm = shared_memory_object(open_or_create, name.c_str(), mode); // TODO: create_only?
 	inst->owner = true;
 	inst->shm.truncate(page_size + inst->datasize * buffer_size);
 	inst->buffer_size = buffer_size;
 
 	// Map and initialize the control struct
-	inst->mapped_ctrl = mapped_region(inst->shm, mode, sizeof(BufferControl));
+	inst->mapped_ctrl = mapped_region(inst->shm, mode, 0, sizeof(BufferControl));
 	memset(inst->mapped_ctrl.get_address(), 0, sizeof(BufferControl));
 	inst->ctrl = new (inst->mapped_ctrl.get_address()) BufferControl;
 
@@ -71,16 +71,16 @@ unique_ptr<SimpleSharedRingBuffer> SimpleSharedRingBuffer::open(const string& na
 	size_t page_size = mapped_region::get_page_size();
 
 	// Open shared memory buffer
-	inst->shm = shared_memory_object(open_or_create, name.c_str(), mode);
+	inst->shm = shared_memory_object(open_only, name.c_str(), mode);
 	offset_t shm_size;
 	if (!inst->shm.get_size(shm_size) || shm_size == 0)
 		throw runtime_error("SHM empty!");
 
 	// Map the control struct
-	inst->mapped_ctrl = mapped_region(inst->shm, mode, sizeof(BufferControl));
+	inst->mapped_ctrl = mapped_region(inst->shm, mode, 0, sizeof(BufferControl));
 	inst->ctrl = static_cast<BufferControl*>(inst->mapped_ctrl.get_address());
 
-	if (inst->ctrl->magic == SimpleSharedRingBuffer::Magic)
+	if (inst->ctrl->magic != SimpleSharedRingBuffer::Magic)
 		throw(runtime_error("Unrecognized shared memory area!"));
 	if (inst->ctrl->state == BufferState::Uninitalized)
 		throw(runtime_error("Uninitalized buffer!"));
@@ -167,6 +167,8 @@ void SimpleSharedRingBuffer::mapBuffer(boost::interprocess::mode_t mode) {
 
 bool SimpleSharedRingBuffer::checkSHM(std::string name) {
 	try {
+		cout << "SHM:" << name << endl;
+
 		// Try to open the SHM
 		shared_memory_object shm(open_only, name.c_str(), read_only);
 
@@ -275,8 +277,23 @@ size_t SimpleSharedRingBuffer::read(size_t maxElems, long long& timestamp) {
 	return samples_available;
 }
 
+size_t SimpleSharedRingBuffer::read(void* buff, size_t maxElems, long long& timestamp) {
+	void* src = getReadPointer<void>();
+	size_t samples_available = read(maxElems, timestamp);
+	memcpy(buff, src, samples_available * getDatasize());
 
-void SimpleSharedRingBuffer::moveEnd(size_t numItems) {
+#ifndef SUPPORT_LOOPING
+	/*
+	 * If looping is not supported the reason for too short read might be wrappping
+	 * of the buffer. This scenario is not considered here because read() is meant
+	 * to be called multiple times anyways to collect wanted number of samples.
+	 */
+#endif
+	return samples_available;
+}
+
+
+void SimpleSharedRingBuffer::write(size_t numItems, long long timestamp) {
 
 #ifdef SUPPORT_LOOPING
 	size_t new_pos = (ctrl->end + numItems) % buffer_size;
@@ -291,6 +308,26 @@ void SimpleSharedRingBuffer::moveEnd(size_t numItems) {
 	ctrl->cond_new_data.notify_all();
 }
 
+
+void SimpleSharedRingBuffer::write(void* buff, size_t numElems, long long timestamp) {
+
+	void* dst = getWritePointer<void>();
+	size_t samples_written = min(getSamplesLeft(), numElems);
+	memcpy(dst, buff, samples_written * getDatasize());
+	write(samples_written, timestamp);
+
+#ifndef SUPPORT_LOOPING
+	// If looped memory space is not used a second write might be necessary
+	if (samples_written < numElems) {
+		cerr << '%' << endl;
+		dst = getWritePointer<void>();
+		samples_written = min(getSamplesLeft(), numElems - samples_written);
+		memcpy(dst, buff, samples_written * getDatasize());
+		write(numElems - samples_written, 0);
+	}
+#endif
+	//return samples_written;
+}
 
 std::string SimpleSharedRingBuffer::getFormat() const {
 	return (ctrl != NULL) ? ctrl->format :  "-";
