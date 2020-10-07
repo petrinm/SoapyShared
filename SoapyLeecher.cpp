@@ -160,7 +160,9 @@ public:
 
 
 	void closeStream(SoapySDR::Stream *stream) {
+#ifdef DEBUG
 		cerr << "closeStream(" << (stream == RX_STREAM ? "RX" : "TX") << ")" << endl;
+#endif
 		if (stream == RX_STREAM) {
 			rx_buffer.release();
 		}
@@ -174,8 +176,9 @@ public:
 	 */
 	int activateStream(SoapySDR::Stream *stream, const int flags=0, const long long timeNs=0, const size_t numElems=0) {
 		(void) flags; (void)timeNs; (void)numElems;
-		cerr << "activateStream" << endl;
-
+#ifdef DEBUG
+		cerr << "activateStream()" << endl;
+#endif
 		if (stream == RX_STREAM) {
 
 			if (rx_buffer.get() == nullptr)
@@ -240,7 +243,7 @@ public:
 			// How much new data is available?
 			rx_buffer->getReadPointers<void>(read_pointers);
 			size_t samples_available = rx_buffer->read(wanted_samples, timestamp);
-#if 1 // def DEBUG
+#if 0 // def DEBUG
 			cout << "# " <<  samples_available << endl;
 #endif
 
