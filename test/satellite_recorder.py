@@ -2,36 +2,43 @@
 
 import SoapySDR
 from SoapySDR import * # SOAPY_SDR_ constants
-import numpy # use numpy for buffers
-import sys, socket
-import argparser
+import numpy as np # use numpy for buffers
+import sys, socket, threading
+import argparse
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--soapy", nargs="*"
-    help="Soapy arguments")
-parser.add_argument("output")
-parser.parse_args()
+parser.add_argument("--device", "-D", help="Soapy arguments", default="")
+parser.add_argument("--frequency", "-f", help="Initial center frequency", default="437M")
+parser.add_argument("--sample_rate", "-s", help="Sample rate", default="60k")
+parser.add_argument("output_file")
+args = parser.parse_args()
 
 
+def parse_postfix(val):
+    if val.endswith("k"):
+        return 1e3 * float(val[:-1])
+    elif val.endswith("M"):
+        return 1e6 * float(val[:-1])
+    elif val.endswith("G"):
+        return 1e9 * float(val[:-1])
+    return float(val)
 
-sdr = SoapySDR.Device({
-    "driver": "leecher"
-})
+args.frequency = parse_postfix(args.frequency)
+args.sample_rate = parse_postfix(args.sample_rate)
 
+kwargs = []
+for param in args.device.split(","):
+    if param:
+        kwargs.append(param.split("="))
 
+sdr = SoapySDR.Device(dict(kwargs))
 rxStream = sdr.setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32)
+print(rxStream)
+
 sdr.activateStream(rxStream)
-sdr.setSampleRate(SOAPY_SDR_RX, 0, 200e3) # 200kHz
-sdr.setFrequency(SOAPY_SDR_RX, 0, 437.126)
-
-
-# Create a re-usable buffer for rx samples
-buff = numpy.array([0] * (16*1024), numpy.complex64)
-
-def ads():
-    pass
-
+sdr.setSampleRate(SOAPY_SDR_RX, 0, args.sample_rate)
+sdr.setFrequency(SOAPY_SDR_RX, 0, args.frequency)
 
 
 def run_gpredict_listener(self, callback, gpredict="127.0.0.1:4532"):
@@ -70,17 +77,23 @@ def run_gpredict_listener(self, callback, gpredict="127.0.0.1:4532"):
         elif data.startswith('f'):
             sock.sendall("f: %d\n" % cur_freq)
 
-      sock.close()
-      if self.verbose: print "Disconnected from: %s:%d" % (addr[0], addr[1])
+    sock.close()
+    if self.verbose:
+        print("Disconnected from: %s:%d" % (addr[0], addr[1]))
 
 
 new_frequency = None
 def new_frequency_callback(freq):
     new_frequency = freq
 
-t = threading.Thread(run_gpredict_listener, new_frequency_callback)
+t = threading.Thread(target=run_gpredict_listener, args=(new_frequency_callback, ))
 
-output = open(args.output, "rb")
+
+# Create a re-usable buffer for rx samples
+buff = np.array([0] * (4*1024), np.complex64)
+
+total = 0
+output = open(args.output_file, "wb")
 try:
     print("Receiving...")
 
@@ -89,16 +102,18 @@ try:
 
         if new_frequency:
             sdr.setFrequency(new_frequency)
+            new_frequency = None
 
-        sr = sdr.readStream(rxStream, [buff], len(buff), timeoutUs=200000)
-        print(sr.ret, "samples") # Num samples or error code
-
-        #output.write(sr)
-
+        sr = sdr.readStream(rxStream, [buff], len(buff), timeoutUs=2000000)
+        #print(sr.ret, "samples") # Num samples or error code
         #print(sr.flags) # Flags set by receive operation
         #print(sr.timeNs) # Timestamp for receive buffer
 
-except:
+        if sr.ret > 0:
+            total += output.write(buff.data)
+            print(f"Saved {total} bytes", end="\r")
+
+except KeyboardInterrupt:
     # Shutdown the stream
     sdr.deactivateStream(rxStream)
     sdr.closeStream(rxStream)
