@@ -17,6 +17,7 @@ For example when you want to abstract the physical device SDR away from the sign
 ## Installation
 
 Dependencies to be installed with your favorite package manager
+- `libsoapysdr-dev`
 - `libliquid-dev`
 - `libboost-system-dev`
 - `libboost-thread-dev`
