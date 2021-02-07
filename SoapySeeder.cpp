@@ -1,7 +1,9 @@
 #include <SoapySDR/Device.hpp>
 #include <SoapySDR/Registry.hpp>
-#include <SoapySDR/ConverterRegistry.hpp>
 
+#ifdef SUPPORT_SOAPY_CONVERTERS
+#include <SoapySDR/ConverterRegistry.hpp>
+#endif
 
 #include "AutoTx.hpp"
 
@@ -33,7 +35,11 @@ class SoapySeeder: public SoapySDR::Device
 public:
 	// Implement constructor with device specific arguments...
 	SoapySeeder(const SoapySDR::Kwargs &args) :
-		shm("/soapy"), converter(NULL), rx(NULL), tx(NULL),
+		shm("/soapy"),
+#ifdef SUPPORT_SOAPY_CONVERTERS
+		converter(NULL),
+#endif
+		rx(NULL), tx(NULL),
 		block_size(0x1000), n_blocks(16 * 1024),
 		tx_activated(0), auto_tx(false)
 	{
@@ -135,6 +141,7 @@ public:
 			rx_buffer->setSampleRate(slave->getSampleRate(SOAPY_SDR_RX, 0));
 
 #if 0
+			// TODO: SUPPORT_SOAPY_CONVERTERS
 			if (format != "CF32") {
 				cout << "Warning: format not CF32" << endl;
 
@@ -719,7 +726,9 @@ private:
 	unique_ptr<SharedRingBuffer> rx_buffer, tx_buffer;
 	unique_ptr<SoapySDR::Device> slave;
 
+#ifdef SUPPORT_SOAPY_CONVERTERS
 	SoapySDR::ConverterRegistry::ConverterFunction converter;
+#endif
 
 	SoapySDR::Stream* rx, *tx; // Slave device stream handles
 
