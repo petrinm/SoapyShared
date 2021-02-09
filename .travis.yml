@@ -1,0 +1,25 @@
+language: cpp
+dist: bionic
+
+compiler:
+- clang
+- gcc
+
+addons:
+  apt:
+    packages:
+    - libsoapysdr-dev
+    - libliquid-dev
+    - libboost-system-dev
+    - libboost-thread-dev
+    - libboost-filesystem-dev
+
+script:
+- set -e
+- mkdir build && cd build
+- cmake ..
+- make
+
+#install:
+#- sudo make install
+
