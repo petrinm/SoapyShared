@@ -1,5 +1,7 @@
 # SoapyShared
 
+[![Build Status](https://api.travis-ci.com/petrinm/SoapyShared.svg?branch=master)](https://travis-ci.com/github/petrinm/SoapyShared)
+
 SoapyShared consists a pair of virtual SoapySDR device drivers which can be used to share single physical device to multiple software processes using shared memory ring buffer.
 One "master" process attaches to physical device via SoapySeeder-driver which forwards all the command to the actual driver but at the same time copies all received data to a shared ring buffer. After creation of the ring buffer virtual SDR devices using SoapySeeder appear and can be used to attach same RX-stream with minimal overhead and latency. Leecher device works like any SDR device except it cannot control the physical device. Streamed data from shared buffer can also transparently up/downconverted and decimated.
 If your SDR supports full duplex leechers can even transmit over the shared memory.
