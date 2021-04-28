@@ -122,7 +122,9 @@ public:
 		const std::vector<size_t> &channels = std::vector<size_t>(),
 		const SoapySDR::Kwargs &args = SoapySDR::Kwargs())
 	{
+#ifdef DEBUG
 		cerr << "setupStream(" << direction << ", " << format << ")" << endl;
+#endif
 
 		if (direction == SOAPY_SDR_RX) {
 
@@ -167,7 +169,9 @@ public:
 	}
 
 	void closeStream(SoapySDR::Stream *stream) {
-		cerr << "closeStream" << endl;
+#ifdef DEBUG
+		cerr << "closeStream()" << endl;
+#endif
 		if (stream == rx) {
 			slave->closeStream(stream);
 			rx_buffer.release();
@@ -179,9 +183,17 @@ public:
 
 
 	int activateStream(SoapySDR::Stream *stream, const int flags=0, const long long timeNs=0, const size_t numElems=0) {
+#ifdef DEBUG
 		cerr << "activateStream(" << flags << ", " << timeNs << ", " << numElems << ")" << endl;
+#endif
+
 		if (stream == rx) {
-			//rx_buffer->acquireWriteLock();
+
+			if (rx_buffer.get() == nullptr)
+				return SOAPY_SDR_STREAM_ERROR;
+
+			rx_buffer->acquireWriteLock();
+			//rx_buffer->sync();
 		}
 		else if (stream == tx) {
 
@@ -190,19 +202,25 @@ public:
 	}
 
 	int deactivateStream(SoapySDR::Stream *stream, const int flags=0, const long long timeNs=0) {
-
-		int r = slave->deactivateStream(stream, flags, timeNs);
+#ifdef DEBUG
+		cerr << "deactivateStream(" << flags << ", " << timeNs << ")" << endl;
+#endif
 
 		if (stream == rx) {
-			rx_buffer.release(); // Delete buffer?
+			if (rx_buffer.get() == nullptr)
+				return SOAPY_SDR_STREAM_ERROR;
+
+			rx_buffer->releaseWriteLock();
 		}
 
-		return r;
+		return slave->deactivateStream(stream, flags, timeNs);
 	}
 
 	int readStream(SoapySDR::Stream *stream, void *const *buffs, const size_t numElems, int &flags, long long &timeNs, const long timeoutUs=100000) {
 
 		if (stream == rx) {
+			if (rx_buffer.get() == nullptr)
+				return SOAPY_SDR_STREAM_ERROR;
 
 #ifdef TIMESTAMPING
 			/*
