@@ -40,7 +40,7 @@ $ sudo make install
 ```
 OR for developing purposes
 ```
-$ ln -s $(pwd)/libSoapyShared.so /usr/lib/x86_64-linux-gnu/SoapySDR/modules0.7
+$ sudo ln -s $(pwd)/libSoapyShared.so /usr/local/lib/SoapySDR/modules0.7/libSoapyShared.so
 ```
 
 
