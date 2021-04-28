@@ -355,9 +355,10 @@ void SimpleSharedRingBuffer::setSampleRate(double rate) {
 	ctrl->version++;
 }
 
-void SimpleSharedRingBuffer::acquireWriteLock() {
+void SimpleSharedRingBuffer::acquireWriteLock(unsigned int timeoutUs) {
 	assert(ctrl != NULL);
-	ctrl->write_mutex.lock();
+	ptime timeout = boost::get_system_time() + microseconds(timeoutUs);
+	ctrl->write_mutex.timed_lock(timeout);
 }
 
 void SimpleSharedRingBuffer::releaseWriteLock() {
@@ -388,7 +389,7 @@ std::ostream& operator<<(std::ostream& stream, const SimpleSharedRingBuffer& buf
 	stream << "   Sample rate: " << buf.ctrl->sample_rate << endl;
 	stream << "   Ring buffer size: " << hex << buf.buffer_size << dec << endl;
 	stream << "   Ring buffer pointer: " << hex << (size_t)buf.buffer << dec << endl;
-	stream << "   End: " << hex << (size_t)buf.ctrl->end << endl;		
+	stream << "   End: " << hex << (size_t)buf.ctrl->end << endl;
 #ifdef SUPPORT_LOOPING
 	stream << "   Looping supported" << endl;
 #else

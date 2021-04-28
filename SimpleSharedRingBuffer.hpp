@@ -178,12 +178,17 @@ class SimpleSharedRingBuffer
 		size_t getNumChannels() const { return 1; }
 
 		/*
-		 * Try to acquire the write lock for writing to the buffer
+		 * Try to acquire the write lock for writing to the buffer.
+
+		 * Throws an `boost::interprocess::interprocess_exception` in case of failure.
 		 */
-		void acquireWriteLock();
+		void acquireWriteLock(unsigned int timeoutUs = 0);
 
 		/*
-		 * Release the write lock
+		 * Release the write lock.
+		 * Function shall not be called if acquireWriteLock hasn't been succesfully called
+		 * from this process.
+		 * Throws an `boost::interprocess::interprocess_exception` in case of failure.
 		 */
 		void releaseWriteLock();
 

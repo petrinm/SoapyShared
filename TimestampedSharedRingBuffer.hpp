@@ -222,12 +222,14 @@ class TimestampedSharedRingBuffer
 		}
 
 		/*
-		 * Try to acquire the write lock for writing to the buffer
+		 * Try to acquire the write lock for writing to the buffer.
+		 * Throws an `boost::interprocess::interprocess_exception` in case of failure.
 		 */
-		void acquireWriteLock();
+		void acquireWriteLock(unsigned int timeoutUs = 0);
 
 		/*
 		 * Release the write lock
+		 * Throws an `boost::interprocess::interprocess_exception` in case of failure.
 		 */
 		void releaseWriteLock();
 

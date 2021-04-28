@@ -411,9 +411,10 @@ void TimestampedSharedRingBuffer::setSampleRate(double rate) {
 	ctrl->version++;
 }
 
-void TimestampedSharedRingBuffer::acquireWriteLock() {
+void TimestampedSharedRingBuffer::acquireWriteLock(unsigned int timeoutUs = 0) {
 	assert(ctrl != NULL);
-	ctrl->write_mutex.lock();
+	ptime timeout = boost::get_system_time() + microseconds(timeoutUs);
+	ctrl->write_mutex.timed_lock(timeout);
 }
 
 void TimestampedSharedRingBuffer::releaseWriteLock() {
