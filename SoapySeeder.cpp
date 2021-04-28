@@ -782,9 +782,16 @@ SoapySDR::KwargsList findSeeder(const SoapySDR::Kwargs &args)
 			if (dev["driver"] == "leecher")
 				continue;
 
+			// Copy the slave args with the prefix
 			SoapySDR::Kwargs resultArgs;
 			for(auto pair: dev)
 				resultArgs[string("seeder:") + pair.first] = pair.second;
+
+			// Create readable label for the Seeder driver
+			if (dev.find("label") != dev.end())
+				resultArgs["label"] = "SoapySeeder: " + dev["label"];
+			else
+				resultArgs["label"] = "SoapySeeder: " + dev["driver"];
 
 			results.push_back(resultArgs);
 		}

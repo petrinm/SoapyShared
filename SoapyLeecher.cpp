@@ -584,6 +584,9 @@ SoapySDR::KwargsList findLeecher(const SoapySDR::Kwargs &args)
 		SoapySDR::Kwargs resultArgs;
 		resultArgs["shm"] = shm_name;
 
+		// Create readable label for the Leetcher driver
+		resultArgs["label"] = "SoapyLeecher: " + shm_name;
+
 		results.push_back(resultArgs);
 	}
 
