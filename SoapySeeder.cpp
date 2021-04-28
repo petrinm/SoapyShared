@@ -107,11 +107,7 @@ public:
 	}
 
 	size_t getNumChannels(const int dir) const {
-		if (dir == SOAPY_SDR_RX && rx_buffer)
-			return rx_buffer->getNumChannels();
-		else if (dir == SOAPY_SDR_TX && tx_buffer)
-			return tx_buffer->getNumChannels();
-		return 0;
+		return slave->getNumChannels(dir);
 	}
 
 	bool getFullDuplex(const int direction, const size_t channel) const {
