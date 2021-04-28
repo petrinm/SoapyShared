@@ -94,20 +94,24 @@ class SimpleSharedRingBuffer
 		 * Return pointer to current write position
 		 */
 		template<typename T> T* getWritePointer() {
-			return static_cast<T*>(buffer + datasize * ctrl->end);
+			assert(sizeof(T) && sizeof(T) == datasize);
+			return reinterpret_cast<T*>(reinterpret_cast<size_t>(buffer) + datasize * ctrl->end);
 		}
-		template<typename T> void getWritePointers(T* ptrs[]) {
-			ptrs[0] =  static_cast<T*>(buffer + datasize * ctrl->end);
+		template<class T> void getWritePointers(T* ptrs[]) {
+			assert(sizeof(T) && sizeof(T) == datasize);
+			ptrs[0] = reinterpret_cast<T*>(reinterpret_cast<size_t>(buffer) + datasize * ctrl->end);
 		}
 
 		/*
 		 * Return pointer to current read position
 		 */
 		template<typename T> T* getReadPointer() {
-			return static_cast<T*>(buffer + datasize * prev);
+			assert(sizeof(T) && sizeof(T) == datasize);
+			return reinterpret_cast<T*>(reinterpret_cast<size_t>(buffer) + datasize * prev);
 		}
 		template<typename T> void getReadPointers(T* ptrs[]) {
-			ptrs[0] =  static_cast<T*>(buffer + datasize * prev);
+			assert(sizeof(T) && sizeof(T) == datasize);
+			ptrs[0] = reinterpret_cast<void*>(reinterpret_cast<size_t>(buffer) + datasize * prev);
 		}
 
 		/*

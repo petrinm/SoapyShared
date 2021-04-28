@@ -137,22 +137,26 @@ class TimestampedSharedRingBuffer
 		 * Return pointer to current read/write position
 		 */
 		template<typename T> T* getWritePointer() {
-			return static_cast<T*>(buffers[0] + datasize * ctrl->end);
+			assert(sizeof(T) && sizeof(T) == datasize);
+			return static_cast<T*>(reinterpret_cast<size_t>(buffers[0]) + datasize * ctrl->end);
 		}
 		template<typename T> void getWritePointers(T* ptrs[]) {
+			assert(sizeof(T) && sizeof(T) == datasize);
 			for (size_t ch = 0; ch < ctrl->n_channels; ch++)
-				ptrs[ch] =  static_cast<T*>(buffers[ch] + datasize * ctrl->end);
+				ptrs[ch] =  reinterpret_cast<T*>(reinterpret_cast<size_t>(buffers[ch]) + datasize * ctrl->end);
 		}
 
 		/*
 		 * Return pointer to current read/write position
 		 */
 		template<typename T> T* getReadPointer() {
-			return static_cast<T*>(buffers[0] + datasize * prev);
+			assert(sizeof(T) && sizeof(T) == datasize);
+			return static_cast<T*>(reinterpret_cast<size_t>(buffers[0]) + datasize * prev);
 		}
 		template<typename T> void getReadPointers(T* ptrs[]) {
+			assert(sizeof(T) && sizeof(T) == datasize);
 			for (size_t ch = 0; ch < ctrl->n_channels; ch++)
-				ptrs[ch] =  static_cast<T*>(buffers[ch] + datasize * prev);
+				ptrs[ch] = reinterpret_cast<T*>(reinterpret_cast<size_t>(buffers[ch]) + datasize * prev);
 		}
 
 		/*
