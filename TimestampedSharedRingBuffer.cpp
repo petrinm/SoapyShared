@@ -450,6 +450,11 @@ std::ostream& operator<<(std::ostream& stream, const TimestampedSharedRingBuffer
 		stream << " 0x" << (size_t)buf.buffers[ch];
 	stream << dec << endl;
 	stream << "   End: 0x" << hex << (size_t)buf.ctrl->end << endl;
+#ifdef SUPPORT_LOOPING
+	stream << "   Looping supported" << endl;
+#else
+	stream << "   Looping not supported" << endl;
+#endif
 	stream << endl;
 
 	return stream;

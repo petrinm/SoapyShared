@@ -388,7 +388,12 @@ std::ostream& operator<<(std::ostream& stream, const SimpleSharedRingBuffer& buf
 	stream << "   Sample rate: " << buf.ctrl->sample_rate << endl;
 	stream << "   Ring buffer size: " << hex << buf.buffer_size << dec << endl;
 	stream << "   Ring buffer pointer: " << hex << (size_t)buf.buffer << dec << endl;
-	stream << "   End: " << hex << (size_t)buf.ctrl->end << endl;
+	stream << "   End: " << hex << (size_t)buf.ctrl->end << endl;		
+#ifdef SUPPORT_LOOPING
+	stream << "   Looping supported" << endl;
+#else
+	stream << "   Looping not supported" << endl;
+#endif
 	stream << endl;
 
 	return stream;
