@@ -47,7 +47,6 @@ struct BufferControl {
 };
 
 
-
 class SimpleSharedRingBuffer
 {
 	public:
@@ -94,11 +93,11 @@ class SimpleSharedRingBuffer
 		 * Return pointer to current write position
 		 */
 		template<typename T> T* getWritePointer() {
-			assert(sizeof(T) && sizeof(T) == datasize);
+			//assert(sizeof(T) && sizeof(T) == datasize);
 			return reinterpret_cast<T*>(reinterpret_cast<size_t>(buffer) + datasize * ctrl->end);
 		}
 		template<class T> void getWritePointers(T* ptrs[]) {
-			assert(sizeof(T) && sizeof(T) == datasize);
+			//assert(sizeof(T) && sizeof(T) == datasize);
 			ptrs[0] = reinterpret_cast<T*>(reinterpret_cast<size_t>(buffer) + datasize * ctrl->end);
 		}
 
@@ -106,11 +105,11 @@ class SimpleSharedRingBuffer
 		 * Return pointer to current read position
 		 */
 		template<typename T> T* getReadPointer() {
-			assert(sizeof(T) && sizeof(T) == datasize);
+			//assert(sizeof(T) && sizeof(T) == datasize);
 			return reinterpret_cast<T*>(reinterpret_cast<size_t>(buffer) + datasize * prev);
 		}
 		template<typename T> void getReadPointers(T* ptrs[]) {
-			assert(sizeof(T) && sizeof(T) == datasize);
+			//assert(sizeof(T) && sizeof(T) == datasize);
 			ptrs[0] = reinterpret_cast<void*>(reinterpret_cast<size_t>(buffer) + datasize * prev);
 		}
 
@@ -243,5 +242,6 @@ class SimpleSharedRingBuffer
 		size_t prev, version;
 		bool owner;
 };
+
 
 #endif /* __SIMPLE_SHARED_RING_BUFFER_H__	 */
