@@ -39,59 +39,71 @@ public:
 
 	//Implement constructor with device specific arguments...
 	SoapyLeecher(const SoapySDR::Kwargs &args):
-		shm("/soapy"), center_frequency(100e6), sample_rate(1e6), resampl_rate(1.f)
+		shm("/soapy"),
+		rx_frequency(100e6), rx_sample_rate(1e6),
+		lo_nco(NULL), resampler(NULL),
+		tx_frequency(100e6), tx_sample_rate(1e6)
 	{
 
-		// Initz
+		// Try to the SHM name argument
 		auto i = args.find("shm");
 		if (i != args.end())
 			shm = i->second;
 
 
 		// Open shared memory buffer
-		rx_buffer = SharedRingBuffer::open(shm, boost::interprocess::read_write); // TODO: R&W right required for some reason..
+		// TODO: R&W right required for some reason..
+		rx_buffer = SharedRingBuffer::open(shm, boost::interprocess::read_write);
 
 		cout << *rx_buffer;
 
 		if (SharedRingBuffer::checkSHM(shm + "_tx"))
 			tx_buffer = SharedRingBuffer::open(shm + "_tx", boost::interprocess::read_write);
 
-		lo_nco = nco_crcf_create(LIQUID_VCO);
-		//resampler = msresamp_crcf_create(1, 30);
-		resampler = resamp_crcf_create(1.0f, 25, 0.4 / 1,  60.0f, 32);
-
-		update_converter();
 	}
 
 	~SoapyLeecher() {
-		nco_crcf_destroy(lo_nco);
-		resamp_crcf_destroy(resampler);
+		if (lo_nco != NULL)
+			nco_crcf_destroy(lo_nco);
+		if (resampler != NULL)
+			resamp_crcf_destroy(resampler);
 	}
 
 	void update_converter() {
 
-		// Check new resampling rate
-		float new_resampl_rate = rx_buffer->getSampleRate() / sample_rate;
-		if (new_resampl_rate != resampl_rate) { // TODO: waning int/float compare
+		// Calculate new resampling rate and frequency offset
+		resampl_rate = rx_buffer->getSampleRate() / rx_sample_rate;
+		double offset = rx_frequency - rx_buffer->getCenterFrequency();
 
-			cout << "New resampling rate: " << resampl_rate << endl;
-			resampl_rate = new_resampl_rate;
-
-			if (resampl_rate != 1 && rx_buffer->getFormat() != "CF32")
-				throw runtime_error("Resampling is not supported with integers!");
-
-			// Update resampler
-			resamp_crcf_destroy(resampler);
-			resampler = resamp_crcf_create(1 / resampl_rate, 25, 0.4, 60.0f, 32);
+		if (abs(resampl_rate - 1.0) < 1e-4 &&  abs(offset) < 1e-4){
+			// Disable converter
+			if (resampler != NULL)
+				resamp_crcf_destroy(resampler);
+			resampler = NULL;
+			return;
 		}
 
-		// Calculate new frequency offset for mixing
-		double offset = center_frequency - rx_buffer->getCenterFrequency();
+#ifdef DEBUG
+		cerr << "New resampling rate: " << resampl_rate << endl;
 		cerr << "Frequency offset: " << offset << "Hz" << endl;
+#endif
 
-		// Update NCO
+		if (resampl_rate != 1 && rx_buffer->getFormat() != "CF32")
+			throw runtime_error("Mixing is not supported with non-CF32 streams!");
+
+		/*
+		 * Update resampler
+		 */
+		if (resampler != NULL)
+			resamp_crcf_destroy(resampler);
+		resampler = resamp_crcf_create(1 / resampl_rate, 25, 0.4, 60.0f, 32);
+
+		/*
+		 * Update NCO
+		 */
+		if (lo_nco == NULL)
+ 			lo_nco = nco_crcf_create(LIQUID_VCO);
 		nco_crcf_set_frequency(lo_nco, 2*M_PI * offset / rx_buffer->getSampleRate());
-
 	}
 
 	string getDriverKey(void) const {
@@ -110,22 +122,24 @@ public:
 	}
 
 	size_t getNumChannels(const int dir) const {
-		if (dir == SOAPY_SDR_RX && rx_buffer)
+		if (dir == SOAPY_SDR_RX && rx_buffer.get() != nullptr)
 			return rx_buffer->getNumChannels();
-		else if (dir == SOAPY_SDR_TX && tx_buffer)
+		else if (dir == SOAPY_SDR_TX && tx_buffer.get() != nullptr)
 			return tx_buffer->getNumChannels();
 		return 0;
 	}
 
 	bool getFullDuplex(const int direction, const size_t channel) const {
 		(void) direction; (void) channel;
-		return (tx_buffer != NULL);
+		return (tx_buffer.get() != nullptr);
 	}
 
 	std::vector<std::string> getStreamFormats(const int direction, const size_t channel) const {
 		vector<string> formats;
-		// if (direction == SOAPY_SDR_RX)
-		formats.push_back(rx_buffer->getFormat());
+		if (direction == SOAPY_SDR_RX && rx_buffer.get() != nullptr)
+			formats.push_back(rx_buffer->getFormat());
+		else if (direction == SOAPY_SDR_TX && tx_buffer.get() != nullptr)
+			formats.push_back(tx_buffer->getFormat());
 		return formats;
 	}
 
@@ -139,7 +153,9 @@ public:
 		const std::vector<size_t> &channels = std::vector<size_t>(),
 		const SoapySDR::Kwargs &args=SoapySDR::Kwargs())
 	{
-		cerr << "setupStream(" << direction << ", " << format << ")" << endl;
+#ifdef DEBUG
+		cerr << "setupStream(" << (direction == SOAPY_SDR_RX ? "RX" : "TX") << ", " << format << ")" << endl;
+#endif
 
 		if (direction == SOAPY_SDR_RX) {
 
@@ -150,17 +166,23 @@ public:
 		}
 		else if (direction == SOAPY_SDR_TX) {
 
+			if (tx_buffer.get() == nullptr)
+				return NULL;
+
 			if (tx_buffer->getFormat() != format)
 				throw runtime_error("Invalid format!");
 
 			return TX_STREAM; // Return TX-handle
 		}
+
 		return NULL;
 	}
 
 
 	void closeStream(SoapySDR::Stream *stream) {
+#ifdef DEBUG
 		cerr << "closeStream(" << (stream == RX_STREAM ? "RX" : "TX") << ")" << endl;
+#endif
 		if (stream == RX_STREAM) {
 			rx_buffer.release();
 		}
@@ -174,7 +196,9 @@ public:
 	 */
 	int activateStream(SoapySDR::Stream *stream, const int flags=0, const long long timeNs=0, const size_t numElems=0) {
 		(void) flags; (void)timeNs; (void)numElems;
-		cerr << "activateStream" << endl;
+#ifdef DEBUG
+		cerr << "activateStream(" << (stream == RX_STREAM ? "RX" : "TX") << ", " << flags << ")" << endl;
+#endif
 
 		if (stream == RX_STREAM) {
 
@@ -183,7 +207,8 @@ public:
 
 			// Sync the receiver
 			rx_buffer->sync();
-			decimation_counter = 0;
+			update_converter();
+
 			return 0;
 		}
 		else if (stream == TX_STREAM) {
@@ -192,11 +217,15 @@ public:
 				return SOAPY_SDR_STREAM_ERROR;
 
 			// Aqcuire the write lock!
-			tx_buffer->acquireWriteLock();
+			tx_buffer->acquireWriteLock(100000);
+
+			tx_buffer->setCenterFrequency(tx_frequency);
+			tx_buffer->setSampleRate(tx_sample_rate);
+
 			return 0;
 		}
 
-		return -1;
+		return SOAPY_SDR_STREAM_ERROR;
 	}
 
 	int deactivateStream(SoapySDR::Stream *stream, const int flags=0, const long long timeNs=0) {
@@ -222,7 +251,9 @@ public:
 		unsigned n_samples = 0, n_resamples = 0;
 		unsigned int wanted_samples = ceil(numElems * resampl_rate);
 
-		cout << "resampledReadStream " << dec << numElems << " " << resampl_rate << " " << wanted_samples << endl;
+#ifdef DEBUG_RESAMPLING
+		cerr << "resampledReadStream(" << dec << numElems << ", " << resampl_rate << ", " << wanted_samples << ")" << endl;
+#endif
 
 		// Limit wanted sample count if its crazy
 		//if (wanted_samples > rx_buffer->getCtrl().buffer_size / 2)
@@ -235,13 +266,13 @@ public:
 		void* read_pointers[n_channels];
 
 		while (wanted_samples > 0) {
-			cout << "wanted_samples " << dec << wanted_samples << endl;
 
 			// How much new data is available?
 			rx_buffer->getReadPointers<void>(read_pointers);
 			size_t samples_available = rx_buffer->read(wanted_samples, timestamp);
-#if 1 // def DEBUG
-			cout << "# " <<  samples_available << endl;
+
+#ifdef DEBUG_RESAMPLING
+			cerr << dec << "Wanted: " << wanted_samples << " Found. " << samples_available << endl;
 #endif
 
 			// First iterate for each rx channel (more cache friendly)
@@ -273,14 +304,22 @@ public:
 					n_samples += n_resamples;
 					new_resamples += n_resamples;
 				}
-				cout << samples_available << " -> " << new_resamples << endl;
+#ifdef DEBUG_RESAMPLING
+				cerr << "Resampled: " << samples_available << " -> " << new_resamples << endl;
+#endif
 			}
 			wanted_samples -= samples_available;
-			cout << "n_samples " << dec << n_samples << endl;
 
+#ifdef DEBUG_RESAMPLING
+			cerr << dec << "n_samples " << n_samples << endl;
+#endif
 
-			if (boost::get_system_time() >= abs_timeout)
-				return SOAPY_SDR_TIMEOUT;
+			if (boost::get_system_time() >= abs_timeout) {
+				if (n_samples == 0)
+					return SOAPY_SDR_TIMEOUT;
+				else
+					return n_samples;
+			}
 
 			rx_buffer->wait(abs_timeout);
 		}
@@ -307,11 +346,12 @@ public:
 				update_converter();
 			}
 
-			if (resampl_rate != 1)
+			if (resampler != NULL)
 			 	return resampledReadStream(stream, buffs, numElems, flags, timeNs, timeoutUs);
 
-
-			cerr << endl << "ReadStream " << numElems << endl;
+#ifdef DEBUG
+			cerr << dec << "ReadStream(" << numElems << ")" << endl;
+#endif
 #ifdef TIMESTAMPING
 			if (numElems % rx_buffer->getCtrl().block_size != 0)
 				cerr << "numElems " << numElems << " is not a nice number!" << endl;
@@ -333,7 +373,9 @@ public:
 				rx_buffer->getReadPointers<void>(read_pointers);
 
 				size_t samples_available = rx_buffer->read(wanted_samples, timestamp);
-				cout << "# " <<  samples_available << endl;
+#ifdef DEBUG
+				cerr << "# " <<  samples_available << endl;
+#endif
 
 				assert(samples_available <= wanted_samples);
 				wanted_samples -= samples_available;
@@ -355,14 +397,19 @@ public:
 						break;
 				}
 
-				if (boost::get_system_time() >= abs_timeout)
-					return SOAPY_SDR_TIMEOUT;
+				if (boost::get_system_time() >= abs_timeout) {
+					if (new_samples == 0)
+						return SOAPY_SDR_TIMEOUT;
+					else
+						return new_samples;
+				}
 
-				//cout << "wating" << endl;
 				rx_buffer->wait(abs_timeout);
 			}
 
+#ifdef DEBUG
 			cerr << "new_samples " << new_samples << endl;
+#endif
 			return new_samples;
 		}
 		return SOAPY_SDR_STREAM_ERROR;
@@ -421,6 +468,9 @@ public:
 	}
 
 	int readStreamStatus(SoapySDR::Stream *stream, size_t &chanMask, int &flags, long long &timeNs, const long timeoutUs=100000) {
+#ifdef DEBUG
+		cerr << "readStreamStatus(" << (stream == RX_STREAM ? "RX": "TX") << endl;
+#endif
 		if (stream == RX_STREAM) { }
 		else if (stream == TX_STREAM) { }
 		return SOAPY_SDR_NOT_SUPPORTED;
@@ -442,39 +492,48 @@ public:
 
 
 	void setFrequency(const int direction, const size_t channel, const double frequency, const SoapySDR::Kwargs &args=SoapySDR::Kwargs()) {
+#ifdef DEBUG
 		cerr << "setFrequency(" << direction << ", " << channel << ", " << frequency << ")" << endl;
-
+#endif
 		if (direction == SOAPY_SDR_RX) {
 
 			if (rx_buffer.get() == nullptr)
 				throw runtime_error("RX not available");
 
-			center_frequency = frequency;
-			update_converter();
+			rx_frequency = frequency;
+
+			if (0)
+				update_converter();
 		}
 		else if (direction == SOAPY_SDR_TX) {
 			if (tx_buffer.get() == nullptr)
 				throw runtime_error("TX not available");
-			tx_buffer->setCenterFrequency(frequency);
+
+			tx_frequency = frequency;
+
+			if (0 /*tx_enabled*/)
+				tx_buffer->setCenterFrequency(frequency);
 		}
 
 	}
 
 	double getFrequency(const int direction, const size_t channel) const {
 		if (direction == SOAPY_SDR_RX) {
-			return center_frequency; // Return mixed center frequency
+			return rx_frequency; // Return mixed center frequency
 		}
 		else if (direction == SOAPY_SDR_TX) {
 			if (tx_buffer.get() == nullptr)
 				throw runtime_error("TX not available");
-			return tx_buffer->getCenterFrequency();
+			return tx_frequency; // tx_buffer->getCenterFrequency();
 		}
 		return 0.0;
 	}
 
 
 	void setSampleRate(const int direction, const size_t channel, const double rate) {
-
+#ifdef DEBUG
+		cerr << "setSampleRate(" << direction << ", " << channel << ", " << rate << ")" << endl;
+#endif
 		if (direction == SOAPY_SDR_RX) {
 			if (rx_buffer.get() == nullptr)
 				throw runtime_error("RX not available");
@@ -482,24 +541,28 @@ public:
 			if (rx_buffer->getSampleRate() < rate)
 				throw runtime_error("Interpolation not supported!");
 
-			sample_rate = rate;
-			update_converter();
+			rx_sample_rate = rate;
+
+			if (0 /* rx_enabled */)
+				update_converter();
 		}
 		else if (direction == SOAPY_SDR_TX) {
 			if (tx_buffer.get() == nullptr)
 				throw runtime_error("TX not available");
-			tx_buffer->setSampleRate(rate);
+
+			tx_sample_rate = rate;
 		}
 	}
 
 	double getSampleRate(const int direction, const size_t channel) const {
 		if (direction == SOAPY_SDR_RX) {
-			return sample_rate; // Return sample rate after decimation
+			return rx_sample_rate; // Return sample rate after decimation
 		}
 		else if (direction == SOAPY_SDR_TX) {
 			if (tx_buffer.get() == nullptr)
 				throw runtime_error("TX not available");
-			return tx_buffer->getSampleRate();
+
+			return tx_sample_rate; // tx_buffer->getSampleRate();
 		}
 		return 0.0;
 	}
@@ -513,7 +576,13 @@ public:
 	}*/
 
 	double getBandwidth(const int direction, const size_t channel) const {
-		return sample_rate;
+		if (direction == SOAPY_SDR_RX) {
+			return rx_sample_rate;
+		}
+		else if (direction == SOAPY_SDR_TX) {
+			return tx_sample_rate;
+		}
+		return 0.0;
 	}
 
 /*
@@ -527,16 +596,24 @@ public:
 */
 
 private:
-	string shm;
-	unique_ptr<SharedRingBuffer> rx_buffer, tx_buffer;
+	string shm;          // Shared memory buffer name
 
-	double center_frequency, sample_rate;
+	/*
+	 * Args for receiving
+	 */
+	unique_ptr<SharedRingBuffer> rx_buffer;
+	double rx_frequency, rx_sample_rate;
 	double resampl_rate;
-	size_t decimation_counter;
 
 	// DSP blocks
 	nco_crcf lo_nco;
 	resamp_crcf resampler;
+
+	/*
+	 * Args for transmitting
+	 */
+	unique_ptr<SharedRingBuffer> tx_buffer;
+	double tx_frequency, tx_sample_rate;
 
 };
 
