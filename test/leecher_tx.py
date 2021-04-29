@@ -10,10 +10,9 @@ sdr = SoapySDR.Device({
 
 
 txStream = sdr.setupStream(SOAPY_SDR_TX, SOAPY_SDR_CF32)
-sdr.activateStream(txStream)
 sdr.setSampleRate(SOAPY_SDR_TX, 0, 0.1e6)
 sdr.setFrequency(SOAPY_SDR_TX, 0, 437e6)
-
+sdr.activateStream(txStream)
 
 # Create test signal
 x = numpy.linspace(0, 2*3.14 * 100, 1024)
