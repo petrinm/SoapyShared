@@ -40,7 +40,7 @@ public:
 		converter(NULL),
 #endif
 		rx(NULL), tx(NULL),
-		block_size(0x1000), n_blocks(16 * 1024),
+		block_size(0x1000), n_blocks(1024 * 1024),
 		tx_activated(0), auto_tx(false)
 	{
 

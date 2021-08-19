@@ -238,6 +238,9 @@ size_t SimpleSharedRingBuffer::read(size_t maxElems, long long& timestamp) {
 	size_t samples_available;
 	size_t nextp = ctrl->end;
 
+	if (maxElems > buffer_size / 3)
+		throw runtime_error("Requesting too many samples! Increase the shared memory buffer size.");
+
 	if (nextp < prev) { // Has the buffer wrapped around?
 #ifdef SUPPORT_LOOPING
 		samples_available = (buffer_size - prev) + nextp;
