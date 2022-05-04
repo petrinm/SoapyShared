@@ -40,7 +40,7 @@ public:
 		converter(NULL),
 #endif
 		rx(NULL), tx(NULL),
-		block_size(0x1000), n_blocks(1024 * 1024),
+		block_size(0x2000), n_blocks(16 * 1024),
 		tx_activated(0), auto_tx(false)
 	{
 
@@ -123,7 +123,7 @@ public:
 		const SoapySDR::Kwargs &args = SoapySDR::Kwargs())
 	{
 #ifdef DEBUG
-		cerr << "setupStream(" << direction << ", " << format << ")" << endl;
+		cerr << "setupStream(" << ", " << format << ")" << endl;
 #endif
 
 		if (direction == SOAPY_SDR_RX) {
@@ -170,7 +170,7 @@ public:
 
 	void closeStream(SoapySDR::Stream *stream) {
 #ifdef DEBUG
-		cerr << "closeStream()" << endl;
+		cerr << "closeStream(" << ")" << endl;
 #endif
 		if (stream == rx) {
 			slave->closeStream(stream);
@@ -232,7 +232,9 @@ public:
 
 			// Require alignment!
 			if (readElems % rx_buffer->getCtrl().block_size != 0) {
+#ifdef DEBUG
 				cerr << "numElems " << readElems << " is not a nice number!" << endl;
+#endif
 				readElems -= (readElems % rx_buffer->getCtrl().block_size);
 				assert(readElems > 0);
 			}
@@ -251,7 +253,7 @@ public:
 					return ret;
 
 				// Require that slave returns wanted amount of samples
-				assert(read_samples == block_size);
+				assert(ret == (int)block_size);
 
 				// Indicate availibility of new data in the buffer
 				rx_buffer->write(ret, timeNs);
@@ -260,7 +262,7 @@ public:
 				for (unsigned ch = 0; ch < n_channels; ch++)
 					memcpy(buffs[ch], shmbuffs[ch], rx_buffer->getDatasize() * ret);
 
-				read_samples += read_samples;
+				read_samples += ret;
 			}
 
 #ifdef DEBUG
