@@ -89,6 +89,7 @@ try:
 
         if new_frequency:
             sdr.setFrequency(new_frequency)
+            new_frequency_callback = None
 
         sr = sdr.readStream(rxStream, [buff], len(buff), timeoutUs=200000)
         print(sr.ret, "samples") # Num samples or error code
