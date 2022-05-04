@@ -3,7 +3,13 @@
 #include <SoapySDR/Registry.hpp>
 
 #include "AutoTx.hpp"
+
+
+#ifdef TIMESTAMPING
 #include "TimestampedSharedRingBuffer.hpp"
+#else
+#include "SimpleSharedRingBuffer.hpp"
+#endif
 
 #include <complex>
 #include <stdexcept>
@@ -17,35 +23,21 @@
 
 using namespace std;
 
-struct TransmitThreadDescription {
-	SoapySDR::Device* seeder;
-	SoapySDR::Device* slave;
-	char format[6];
-	size_t buffer_size;
-};
 
 void* transmitter_thread(void* p) {
-	//TransmitThreadDescription* desc = static_cast<TransmitThreadDescription*>(p);
-	//SoapySDR::Device* slave = desc->slave;
 
 	TransmitThreadDescription* info = static_cast<TransmitThreadDescription*>(p);
-
-	SoapySDR::Device* seeder = info->seeder;
 	SoapySDR::Device* slave = info->slave;
+	SoapySDR::Stream* tx_stream = info->tx_stream;
+
+#ifdef TIMESTAMPING
+	unique_ptr<TimestampedSharedRingBuffer>tx_buffer = std::move(info->tx_buffer);
+#else
+	unique_ptr<SimpleSharedRingBuffer>tx_buffer = std::move(info->tx_buffer);
+#endif
+
 
 	usleep(1000000); // Delay the startup a bit so life is a bit better!
-
-
-	string tx_format = "CF32";
-	size_t tx_buffer_size = 0x1000000; // 16 MSamples
-
-	// TODO: Hardcoded SHM name!
-	unique_ptr<TimestampedSharedRingBuffer>tx_buffer = TimestampedSharedRingBuffer::create("soapy_tx", boost::interprocess::read_write, tx_format, tx_buffer_size);
-
-
-	// Setup the tx stream ready on the slave devices
-	SoapySDR::Stream* tx = slave->setupStream(SOAPY_SDR_TX, tx_format /*, channels, args*/);
-
 
 	int tx_activated = 0;
 	const unsigned n_channels = 0;
@@ -110,16 +102,4 @@ void* transmitter_thread(void* p) {
 			usleep(500);
 	}
 
-}
-
-void spawn_tx_thread() {
-
-	struct TransmitThreadDescription* info = new TransmitThreadDescription();
-
-	info->seeder = NULL;
-	info->slave = NULL;
-	strcpy(info->format, "CF32");
-	info->buffer_size = 0x00;
-
-	//tx_thread = boost::thread(transmitter_thread, (void *)info);
 }

@@ -92,15 +92,40 @@ public:
 		if (slave->getDriverKey() == getDriverKey())
 			throw runtime_error("Slave device is SoapySharedSeeder! Recursion not allowed!");
 
+
 		// Start auto transmission
-		if (args.find("auto_tx") != args.end()) {
+		if (args.find("auto_tx") != args.end())
 			auto_tx = true;
-			// Create TX buffer/thread also so leechers can transmit
-			tx_thread = boost::thread(transmitter_thread, (void *)slave.get());
-		}
 
 	}
 
+
+	void spawnTxThread() {
+
+		struct TransmitThreadDescription* info = new TransmitThreadDescription();
+
+		size_t tx_n_blocks = n_blocks; // TODO: Allow defin these separately
+		size_t tx_block_size = block_size;
+		string tx_format = "CF32";
+
+		string tx_shm = shm + "_tx";
+#ifdef TIMESTAMPING
+		info->tx_buffer = TimestampedSharedRingBuffer::create(tx_shm, boost::interprocess::read_write, tx_format, tx_n_blocks, tx_block_size);
+#else
+		info->tx_buffer = SimpleSharedRingBuffer::create(tx_shm, boost::interprocess::read_write, tx_format, tx_n_blocks * tx_block_size);
+#endif
+
+		// Setup the tx stream ready on the slave devices
+		info->tx_stream = slave->setupStream(SOAPY_SDR_TX, tx_format /*, channels, args*/);
+		info->slave = slave.get();
+
+		// Create TX buffer/thread also so leechers can transmit
+		tx_thread = boost::thread(transmitter_thread, (void*)info);
+	}
+
+	~SoapySeeder() {
+		//slave
+	}
 
 	string getDriverKey(void) const {
 		return "Seeder";
@@ -155,6 +180,11 @@ public:
 #endif
 			// Setup the slace device
 			rx = slave->setupStream(direction, format, channels, args);
+
+			// Setup TX
+			if (auto_tx)
+				spawnTxThread();
+
 			return rx;
 		}
 		else if (direction == SOAPY_SDR_TX) {
@@ -196,7 +226,9 @@ public:
 			//rx_buffer->sync();
 		}
 		else if (stream == tx) {
-
+			// Fail the "native" activate activateStream() if auto tx has been enabled.
+			if (auto_tx == true)
+				return SOAPY_SDR_STREAM_ERROR;
 		}
 		return slave->activateStream(stream, flags, timeNs, numElems);
 	}
