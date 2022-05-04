@@ -125,7 +125,7 @@ void SimpleSharedRingBuffer::mapBuffer(boost::interprocess::mode_t mode) {
 
 	int fd = shm.get_mapping_handle().handle;
 	mmap(buffer, sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, page_size);
-	mmap(buffer + sz, sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, page_size);
+	mmap((uint8_t*)buffer + sz, sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, page_size);
 	// TODO: Correct access modes
 
 	// Maybe:

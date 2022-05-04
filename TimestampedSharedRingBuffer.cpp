@@ -33,10 +33,6 @@ static int round_up(int num, int factor) {
 	return num + factor - 1 - (num + factor - 1) % factor;
 }
 
-static int round_down(int num, int factor) {
-	return num - (num % factor);
-}
-
 
 unique_ptr<TimestampedSharedRingBuffer> TimestampedSharedRingBuffer::create(const string& name, boost::interprocess::mode_t mode, string format, size_t n_blocks, size_t block_size) {
 
@@ -172,7 +168,7 @@ void TimestampedSharedRingBuffer::mapBuffer(size_t location, boost::interprocess
 
 		int fd = shm.get_mapping_handle().handle;
 		mmap(buffer, buffer_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, location);
-		mmap(buffer + buffer_size, buffer_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, location);
+		mmap((uint8_t*)buffer + buffer_size, buffer_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, location);
 		// TODO: Correct access modes
 
 		// Maybe:
