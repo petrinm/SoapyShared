@@ -273,8 +273,13 @@ public:
 
 			unsigned read_samples = 0;
 			const size_t block_size = rx_buffer->getCtrl().block_size;
-			const unsigned n_channels = 1;
+			const unsigned n_channels = rx_buffer->getNumChannels();
 			void* shmbuffs[n_channels];
+
+			// Copy host apps buffer
+			void* host_buffs[n_channels];
+			for (unsigned ch = 0; ch < n_channels; ch++)
+				host_buffs[ch] = shmbuffs[ch];
 
 			while (read_samples < readElems) {
 
@@ -291,8 +296,10 @@ public:
 				rx_buffer->write(ret, timeNs);
 
 				// Copy data also to caller's buffer
-				for (unsigned ch = 0; ch < n_channels; ch++)
-					memcpy(buffs[ch], shmbuffs[ch], rx_buffer->getDatasize() * ret);
+				for (unsigned ch = 0; ch < n_channels; ch++) {
+					memcpy(hot_buffs[ch], shmbuffs[ch], rx_buffer->getDatasize() * ret);
+					host_buffs[ch] += rx_buffer->getDatasize() * ret;
+				}
 
 				read_samples += ret;
 			}
