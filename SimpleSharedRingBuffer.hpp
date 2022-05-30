@@ -13,45 +13,57 @@
 #include <boost/interprocess/sync/interprocess_mutex.hpp>
 #include <boost/interprocess/sync/interprocess_condition.hpp>
 
-
-/*
- *
- */
-enum BufferState {
-	Uninitalized = 0,
-	Ready,
-	Streaming,
-	EndOfBurst,
-};
-
-/*
- * Control structure which lives in the beginning of the SHM
- */
-struct BufferControl {
-
-	uint32_t magic;
-
-	size_t end; // Current position on the stream
-
-	// Metadata for streamed data
-	unsigned int version;       // Revision number of these settings
-	char format[6];             // Data format string
-	double center_frequency;    // Center frequency
-	double sample_rate;         // Sample rate of the stream
-	enum BufferState state;
-
-	boost::interprocess::interprocess_mutex write_mutex;
-
-	boost::interprocess::interprocess_mutex data_mutex;
-	boost::interprocess::interprocess_condition cond_new_data;
-};
+#include "SharedRingBuffer.hpp"
 
 
-class SimpleSharedRingBuffer
+class SimpleSharedRingBuffer: SharedRingBuffer
 {
 	public:
 
-		static const uint32_t Magic = 0x50A971;
+		/*
+		 *
+		 */
+		enum BufferState {
+			Uninitalized = 0,
+			Ready,
+			Streaming,
+			EndOfBurst,
+		};
+
+		/*
+		 * Control structure which lives in the beginning of the SHM
+		 */
+		struct BufferControl {
+
+			/*
+			 * Magic number to identify the control structure
+			 */
+			uint32_t magic;
+			char label[32];                 // Text label for the device
+
+			/*
+			 * For the ring buffer
+			 */
+			size_t end;                     // Current position on the stream
+
+			/*
+			 * Metadata about the streamed data
+			 */
+			unsigned int version;           // Revision number of these settings
+			char format[6];                 // Data format string
+			double center_frequency;        // Center frequency
+			double sample_rate;             // Sample rate of the stream
+			enum BufferState state;
+
+
+			boost::interprocess::interprocess_mutex write_mutex;
+
+			boost::interprocess::interprocess_mutex data_mutex;
+			boost::interprocess::interprocess_condition cond_new_data;
+		};
+
+
+		static const uint32_t Magic = 0x50B982;
 
 		/*
 		 * Check doest shared memory buffer exist?
@@ -134,6 +146,7 @@ class SimpleSharedRingBuffer
 		 */
 		void write(size_t numItems, long long timestamp);
 		void write(void* buff, size_t numElems, long long timestamp);
+
 		/*
 		 * Get format string
 		 */
