@@ -58,7 +58,7 @@ void* transmitter_thread(void* p) {
 			// Activate TX stream if needed
 			if (tx_activated == 0) {
 				cerr << "Activating TX!" << endl;
-				slave->activateStream(tx, /* flags = */ 0, /* timeNs = */ 0, /*numElems = */ 0);
+				slave->activateStream(tx_stream, /* flags = */ 0, /* timeNs = */ 0, /*numElems = */ 0);
 			}
 
 			tx_activated = 1;
@@ -69,7 +69,7 @@ void* transmitter_thread(void* p) {
 
 			// Read the real stream
 			int flags;
-			if (slave->writeStream(tx, shmbuffs, readElems, flags /*, const long long timeNs=0, const long timeoutUs=100000*/) < 0)
+			if (slave->writeStream(tx_stream, shmbuffs, readElems, flags /*, const long long timeNs=0, const long timeoutUs=100000*/) < 0)
 				throw runtime_error("Write failed!");
 
 			if (flags)
@@ -84,7 +84,7 @@ void* transmitter_thread(void* p) {
 			long long timeNs = 0;
 
 			// Check if TX-buffer underflow has occured
-			if (slave->readStreamStatus(tx, channelMask, flags, timeNs) == SOAPY_SDR_UNDERFLOW)
+			if (slave->readStreamStatus(tx_stream, channelMask, flags, timeNs) == SOAPY_SDR_UNDERFLOW)
 				tx_activated--;
 
 #if 0
@@ -94,7 +94,7 @@ void* transmitter_thread(void* p) {
 
 			if (tx_activated == 0) {
 				cerr << "Deactivating TX!" << endl;
-				slave->deactivateStream(tx, /* flags = */ 0, /* timeNs = */ 0);
+				slave->deactivateStream(tx_stream, /* flags = */ 0, /* timeNs = */ 0);
 			}
 
 		}
