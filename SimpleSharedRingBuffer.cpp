@@ -2,6 +2,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <cerrno>
+#include <map>
 
 #include <SoapySDR/Device.hpp>
 #include <SoapySDR/Registry.hpp>
@@ -30,8 +31,9 @@ using namespace boost::posix_time;
 
 unique_ptr<SimpleSharedRingBuffer> SimpleSharedRingBuffer::create(const string& name, boost::interprocess::mode_t mode, string format, size_t buffer_size) {
 
-	unique_ptr<SimpleSharedRingBuffer> inst = unique_ptr<SimpleSharedRingBuffer>(new SimpleSharedRingBuffer(name));
-	size_t page_size = mapped_region::get_page_size();
+	SimpleSharedRingBuffer* inst = new SimpleSharedRingBuffer(name);
+	unique_ptr<SimpleSharedRingBuffer> instt = unique_ptr<SimpleSharedRingBuffer>(inst);
+	const size_t page_size = mapped_region::get_page_size();
 
 
 	inst->datasize = SoapySDR::formatToSize(format);
@@ -51,23 +53,27 @@ unique_ptr<SimpleSharedRingBuffer> SimpleSharedRingBuffer::create(const string& 
 
 	// Initialize control struct
 	strncpy(inst->ctrl->format, format.c_str(), 5);
-	inst->ctrl->center_frequency = 100.0e6;
+	inst->ctrl->center_frequency = 100.0e6; // Fill some reasonable value to metadata fields
 	inst->ctrl->sample_rate = 1e6;
+	inst->ctrl->n_channels = 1;
+	inst->ctrl->head = 0;
+	inst->ctrl->tail = ~0;
+	inst->ctrl->state = SharedRingBuffer::Ready;
 	inst->ctrl->magic = SimpleSharedRingBuffer::Magic;
 	inst->version = inst->ctrl->version = 1;
-
 
 	// Map the ring buffer
 	inst->mapBuffer(mode);
 
-	inst->ctrl->state = BufferState::Ready;
-	return inst;
+	inst->ctrl->state = SharedRingBuffer::Ready;
+	return instt;
 }
 
 
 unique_ptr<SimpleSharedRingBuffer> SimpleSharedRingBuffer::open(const string& name, boost::interprocess::mode_t mode) {
 
-	unique_ptr<SimpleSharedRingBuffer> inst = unique_ptr<SimpleSharedRingBuffer>(new SimpleSharedRingBuffer(name));
+	SimpleSharedRingBuffer* inst = new SimpleSharedRingBuffer(name);
+	unique_ptr<SimpleSharedRingBuffer> instt = unique_ptr<SimpleSharedRingBuffer>(inst);
 	size_t page_size = mapped_region::get_page_size();
 
 	// Open shared memory buffer
@@ -82,8 +88,6 @@ unique_ptr<SimpleSharedRingBuffer> SimpleSharedRingBuffer::open(const string& na
 
 	if (inst->ctrl->magic != SimpleSharedRingBuffer::Magic)
 		throw(runtime_error("Unrecognized shared memory area!"));
-	if (inst->ctrl->state == BufferState::Uninitalized)
-		throw(runtime_error("Uninitalized buffer!"));
 
 	// Parse format information
 	inst->datasize = SoapySDR::formatToSize(inst->ctrl->format);
@@ -92,17 +96,17 @@ unique_ptr<SimpleSharedRingBuffer> SimpleSharedRingBuffer::open(const string& na
 
 	inst->buffer_size = (shm_size - page_size) / inst->datasize;
 	inst->version = inst->ctrl->version;
-	inst->prev = inst->ctrl->end; // sync();
+	inst->tail = inst->ctrl->head;
 
 	// Map the ring buffer
 	inst->mapBuffer(mode);
 
-	return inst;
+	return instt;
 }
 
 
 SimpleSharedRingBuffer::SimpleSharedRingBuffer(std::string name):
-	name(name), datasize(0), buffer_size(0), ctrl(NULL), prev(0),
+	name(name), datasize(0), buffer_size(0), ctrl(NULL), tail(0),
 	owner(false)
 { }
 
@@ -167,12 +171,21 @@ void SimpleSharedRingBuffer::mapBuffer(boost::interprocess::mode_t mode) {
 
 bool SimpleSharedRingBuffer::checkSHM(std::string name) {
 	try {
-		cout << "SHM:" << name << endl;
-
+#if 0
+		// Try to open the SHM
+		static std::map<std::string, shared_memory_object> cache;
+		if (cache.find(name) == cache.end())
+			cache[name] = shared_memory_object(open_only, name.c_str(), read_only);
+		else
+			cout << "CACHE" << endl;
+		shared_memory_object& shm = cache[name];
+#else
 		// Try to open the SHM
 		shared_memory_object shm(open_only, name.c_str(), read_only);
+		// TODO: CubicSDR crashes here for unknown reason.....
+#endif
 
-		// Map the SHM
+		// Map the buffer control section
 		mapped_region mapped_ctrl(shm, read_only, 0, sizeof(BufferControl));
 		BufferControl* ctrl = static_cast<BufferControl*>(mapped_ctrl.get_address());
 
@@ -183,6 +196,7 @@ bool SimpleSharedRingBuffer::checkSHM(std::string name) {
 		return true;
 	}
 	catch(...) {
+		cout << "FA" << endl;
 		return false;
 	}
 }
@@ -210,24 +224,46 @@ SimpleSharedRingBuffer::~SimpleSharedRingBuffer() {
 
 
 void SimpleSharedRingBuffer::sync() {
-	prev = ctrl->end;
+	tail = ctrl->head;
+}
+
+
+void SimpleSharedRingBuffer::reset() {
+	boost::interprocess::scoped_lock<interprocess_mutex> lock(ctrl->header_mutex);
+
+	ctrl->state = SharedRingBuffer::Ready;
+	ctrl->head = 0;
+	if (ctrl->tail != ~0U)
+		ctrl->tail = 0;
+
+	ctrl->cond_new_data.notify_all();
+
+	tail = 0;
 }
 
 
 size_t SimpleSharedRingBuffer::getSamplesAvailable() {
+	boost::interprocess::scoped_lock<interprocess_mutex> lock(ctrl->header_mutex);
 #ifdef SUPPORT_LOOPING
-	return (ctrl->end < prev) ? (buffer_size - prev + ctrl->end) : (ctrl->end - prev);
+	return (ctrl->head < tail) ? (buffer_size - tail + ctrl->head) : (ctrl->head - tail);
 #else
-	return (ctrl->end < prev) ? (buffer_size - prev) : (ctrl->end - prev);
+	return (ctrl->head < tail) ? (buffer_size - tail) : (ctrl->head - tail);
 #endif
 }
 
 
 size_t SimpleSharedRingBuffer::getSamplesLeft() {
+	boost::interprocess::scoped_lock<interprocess_mutex> lock(ctrl->header_mutex);
 #ifdef SUPPORT_LOOPING
-	return buffer_size / 2;
+	if (ctrl->tail != ~0U)
+		return buffer_size / 2;
+	else
+		return (ctrl->head < ctrl->tail) ? (buffer_size - ctrl->tail + ctrl->head) : (ctrl->head - ctrl->tail);
 #else
-	return (buffer_size - ctrl->end);
+	if (ctrl->tail != ~0U)
+		return (buffer_size - ctrl->head);
+	else
+		return (ctrl->head < ctrl->tail) ? (buffer_size - ctrl->tail) : (ctrl->head - ctrl->tail);
 #endif
 }
 
@@ -235,26 +271,27 @@ size_t SimpleSharedRingBuffer::getSamplesLeft() {
 size_t SimpleSharedRingBuffer::read(size_t maxElems, long long& timestamp) {
 	(void)timestamp;
 
+	//boost::interprocess::scoped_lock<interprocess_mutex> lock(ctrl->header_mutex);
 	size_t samples_available;
-	size_t nextp = ctrl->end;
+	const size_t head = ctrl->head; // "atomic" read
 
 	if (maxElems > buffer_size / 3)
 		throw runtime_error("Requesting too many samples! Increase the shared memory buffer size.");
 
-	if (nextp < prev) { // Has the buffer wrapped around?
+	if (head < tail) { // Has the buffer wrapped around?
 #ifdef SUPPORT_LOOPING
-		samples_available = (buffer_size - prev) + nextp;
+		samples_available = (buffer_size - tail) + head;
 #else
-		samples_available = buffer_size - prev;
+		samples_available = buffer_size - tail;
 #endif
 
 		//cerr << "a " << (samples_available + nextp) << "  "  << (buffer_size / 2) << endl;
-		if (samples_available + nextp > buffer_size / 2)
+		if (samples_available + head > buffer_size / 2)
 			cerr << "U";
 
 	}
 	else {
-		samples_available = nextp - prev;
+		samples_available = head - tail;
 		//cerr << "b " << samples_available << "  "  << (buffer_size / 2) << endl;
 		if (samples_available > buffer_size / 2)
 			cerr << "U";
@@ -262,7 +299,7 @@ size_t SimpleSharedRingBuffer::read(size_t maxElems, long long& timestamp) {
 
 #if 0
 	cerr << endl;
-	cerr << nextp << " < " << prev << "       " << (nextp < prev) << endl;
+	cerr << head << " < " << tail << "       " << (head < tail) << endl;
 	cerr << "samples_available = " << samples_available << "; maxElems = " << maxElems << endl;
 	cerr << "buffer_size = " << buffer_size << endl;
 	cerr << endl;
@@ -272,16 +309,17 @@ size_t SimpleSharedRingBuffer::read(size_t maxElems, long long& timestamp) {
 	if (samples_available > maxElems)
 		samples_available = maxElems;
 
-	// Move prev-pointer
-	prev += samples_available;
-	if (prev == buffer_size)
-		prev = 0;
+	// Move tail forward
+	tail = (tail + samples_available) % buffer_size;
 
 	return samples_available;
 }
 
 size_t SimpleSharedRingBuffer::read(void* buff, size_t maxElems, long long& timestamp) {
-	void* src = getReadPointer<void>();
+	assert(ctrl->n_channels == 1);
+	boost::interprocess::scoped_lock<interprocess_mutex> lock(ctrl->header_mutex);
+
+	void* src = getReadPointer();
 	size_t samples_available = read(maxElems, timestamp);
 	memcpy(buff, src, samples_available * getDatasize());
 
@@ -298,23 +336,28 @@ size_t SimpleSharedRingBuffer::read(void* buff, size_t maxElems, long long& time
 
 void SimpleSharedRingBuffer::write(size_t numItems, long long timestamp) {
 
+	boost::interprocess::scoped_lock<interprocess_mutex> lock(ctrl->header_mutex);
+
 #ifdef SUPPORT_LOOPING
-	size_t new_pos = (ctrl->end + numItems) % buffer_size;
+	size_t new_pos = (ctrl->head + numItems) % buffer_size;
 #else
-	assert(ctrl->end + numItems <= buffer_size);
-	size_t new_pos = (ctrl->end + numItems);
+	assert(ctrl->head + numItems <= buffer_size);
+	size_t new_pos = (ctrl->head + numItems);
 	if (new_pos >= buffer_size) new_pos = 0;
 #endif
 
-	//cerr << "end = " << ctrl->end << "; new_pos = " << new_pos << endl;
-	ctrl->end = new_pos;
+	//cerr << "head = " << ctrl->head << "; new_pos = " << new_pos << endl;
+	ctrl->head = new_pos;
+	//if (notify)
 	ctrl->cond_new_data.notify_all();
 }
 
 
 void SimpleSharedRingBuffer::write(void* buff, size_t numElems, long long timestamp) {
+	assert(ctrl->n_channels == 1);
+	boost::interprocess::scoped_lock<interprocess_mutex> lock(ctrl->header_mutex);
 
-	void* dst = getWritePointer<void>();
+	void* dst = getWritePointer();
 	size_t samples_written = min(getSamplesLeft(), numElems);
 	memcpy(dst, buff, samples_written * getDatasize());
 	write(samples_written, timestamp);
@@ -323,7 +366,7 @@ void SimpleSharedRingBuffer::write(void* buff, size_t numElems, long long timest
 	// If looped memory space is not used a second write might be necessary
 	if (samples_written < numElems) {
 		cerr << '%' << endl;
-		dst = getWritePointer<void>();
+		dst = getWritePointer();
 		samples_written = min(getSamplesLeft(), numElems - samples_written);
 		memcpy(dst, buff, samples_written * getDatasize());
 		write(numElems - samples_written, 0);
@@ -371,34 +414,46 @@ void SimpleSharedRingBuffer::releaseWriteLock() {
 void SimpleSharedRingBuffer::wait(unsigned int timeoutUs) {
 	assert(ctrl != NULL);
 	ptime abs_timeout = boost::get_system_time() + microseconds(timeoutUs);
-	boost::interprocess::scoped_lock<interprocess_mutex> data_lock(ctrl->data_mutex, abs_timeout);
-	ctrl->cond_new_data.timed_wait(data_lock, abs_timeout);
+	boost::interprocess::scoped_lock<interprocess_mutex> lock(ctrl->header_mutex, abs_timeout);
+	if (tail == ctrl->head) // Empty?
+		ctrl->cond_new_data.timed_wait(lock, abs_timeout);
 }
 
 void SimpleSharedRingBuffer::wait(const boost::posix_time::ptime& abs_timeout) {
 	assert(ctrl != NULL);
-	boost::interprocess::scoped_lock<interprocess_mutex> data_lock(ctrl->data_mutex, abs_timeout);
-	ctrl->cond_new_data.timed_wait(data_lock, abs_timeout);
+	boost::interprocess::scoped_lock<interprocess_mutex> lock(ctrl->header_mutex, abs_timeout);
+	if (tail == ctrl->head) // Empty?
+		ctrl->cond_new_data.timed_wait(lock, abs_timeout);
 }
 
 
-std::ostream& operator<<(std::ostream& stream, const SimpleSharedRingBuffer& buf) {
-	assert(buf.ctrl != NULL);
+void SimpleSharedRingBuffer::print(std::ostream& stream) const {
+	assert(ctrl != NULL);
+	boost::interprocess::scoped_lock<interprocess_mutex> lock(ctrl->header_mutex);
+
+	assert(ctrl != NULL);
 	stream << endl;
-	stream << buf.name << ": (version #" << buf.ctrl->version << ")"  << endl;
+	stream << name << ": (version #" << ctrl->version << ")"  << endl;
 	//stream << "state" << endl;
-	stream << "   Format: " << buf.ctrl->format << " (" << buf.datasize << " bytes)" << endl;
-	stream << "   Center frequency: " << buf.ctrl->center_frequency << endl;
-	stream << "   Sample rate: " << buf.ctrl->sample_rate << endl;
-	stream << "   Ring buffer size: " << hex << buf.buffer_size << dec << endl;
-	stream << "   Ring buffer pointer: " << hex << (size_t)buf.buffer << dec << endl;
-	stream << "   End: " << hex << (size_t)buf.ctrl->end << endl;
+	stream << "   Format: " << ctrl->format << " (" << datasize << " bytes)" << endl;
+	stream << "   Channels: " << ctrl->n_channels << endl;
+	stream << "   Center frequency: " << ctrl->center_frequency << endl;
+	stream << "   Timestamping: Disabled" << endl;
+	stream << "   Sample rate: " << ctrl->sample_rate << endl;
+	stream << "   Ring buffer size: 0x" << hex << buffer_size << dec << endl;
+	stream << "   Ring buffer pointer: 0x" << hex << (size_t)buffer << dec << endl;
+	//stream << "   Ring buffer pointer:" << hex;
+	//for (size_t ch = 0; ch < ctrl->n_channels; ch++)
+	//	stream << " 0x" << (size_t)buffers[ch];
+	//stream << dec << endl;
+
+	stream << "   Head: 0x" << hex << (size_t)ctrl->head << endl;
+	stream << "   Tail: 0x" << hex << (size_t)tail << "  " << (size_t)ctrl->tail << endl;
+
 #ifdef SUPPORT_LOOPING
 	stream << "   Looping supported" << endl;
 #else
 	stream << "   Looping not supported" << endl;
 #endif
 	stream << endl;
-
-	return stream;
 }

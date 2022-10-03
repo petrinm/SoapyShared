@@ -13,22 +13,12 @@
 #include <boost/interprocess/sync/interprocess_mutex.hpp>
 #include <boost/interprocess/sync/interprocess_condition.hpp>
 
+
 #include "SharedRingBuffer.hpp"
 
-
-class SimpleSharedRingBuffer: SharedRingBuffer
+class SimpleSharedRingBuffer: public SharedRingBuffer
 {
 	public:
-
-		/*
-		 *
-		 */
-		enum BufferState {
-			Uninitalized = 0,
-			Ready,
-			Streaming,
-			EndOfBurst,
-		};
 
 		/*
 		 * Control structure which lives in the beginning of the SHM
@@ -44,7 +34,10 @@ class SimpleSharedRingBuffer: SharedRingBuffer
 			/*
 			 * For the ring buffer
 			 */
-			size_t end;                     // Current position on the stream
+			size_t head;                     // Ring buffer position on the stream
+			size_t tail;                     // Current 
+			enum BufferState state;
+			size_t n_channels;
 
 			/*
 			 * Metadata about the streamed data
@@ -53,12 +46,11 @@ class SimpleSharedRingBuffer: SharedRingBuffer
 			char format[6];                 // Data format string
 			double center_frequency;        // Center frequency
 			double sample_rate;             // Sample rate of the stream
-			enum BufferState state;
 
 
 			boost::interprocess::interprocess_mutex write_mutex;
 
-			boost::interprocess::interprocess_mutex data_mutex;
+			boost::interprocess::interprocess_mutex header_mutex;
 			boost::interprocess::interprocess_condition cond_new_data;
 		};
 
@@ -86,10 +78,19 @@ class SimpleSharedRingBuffer: SharedRingBuffer
 		 */
 		~SimpleSharedRingBuffer();
 
+		/**/
+		enum BufferState getState() const { return ctrl->state; }
+		void setState(enum BufferState state) { ctrl->state = state; }
+
 		/*
 		 * Ignore history and move current pointer to end.
 		 */
 		void sync();
+
+		/*
+		 * Reset the state of the ring buffer
+		 */
+		void reset();
 
 		/*
 		 * Get number of available new samples till end pointer or end of the buffer
@@ -97,20 +98,47 @@ class SimpleSharedRingBuffer: SharedRingBuffer
 		size_t getSamplesAvailable();
 
 		/*
+		 * Is the ring buffer empty?
+		 */
+		bool isEmpty() const { return tail == ctrl->head; }
+
+		/*
 		 * Get number of samples that can be written to TX position
 		 */
 		size_t getSamplesLeft();
+
+
+		void* getWritePointer() {
+			return reinterpret_cast<void*>(reinterpret_cast<size_t>(buffer) + datasize * ctrl->head);
+		}
+
+		void* getReadPointer() {
+			return reinterpret_cast<void*>(reinterpret_cast<size_t>(buffer) + datasize * tail);
+		}
+
+		void getWritePointers(void* ptrs[]) {
+			//assert(sizeof(T) && sizeof(T) == datasize);
+			// for (size_t ch = 0; ch < ctrl->channels; ch++)
+			ptrs[0] = reinterpret_cast<void*>(reinterpret_cast<size_t>(buffer) + datasize * ctrl->head);
+		}
+
+
+		void getReadPointers(void* ptrs[]) {
+			//assert(sizeof(T) && sizeof(T) == datasize);
+			ptrs[0] = reinterpret_cast<void*>(reinterpret_cast<size_t>(buffer) + datasize * tail);
+		}
+#if 0
 
 		/*
 		 * Return pointer to current write position
 		 */
 		template<typename T> T* getWritePointer() {
 			//assert(sizeof(T) && sizeof(T) == datasize);
-			return reinterpret_cast<T*>(reinterpret_cast<size_t>(buffer) + datasize * ctrl->end);
+			return reinterpret_cast<T*>(reinterpret_cast<size_t>(buffer) + datasize * ctrl->head);
 		}
-		template<class T> void getWritePointers(T* ptrs[]) {
+		template<typename T> void getWritePointers(T* ptrs[]) {
 			//assert(sizeof(T) && sizeof(T) == datasize);
-			ptrs[0] = reinterpret_cast<T*>(reinterpret_cast<size_t>(buffer) + datasize * ctrl->end);
+			ptrs[0] = reinterpret_cast<T*>(reinterpret_cast<size_t>(buffer) + datasize * ctrl->head);
 		}
 
 		/*
@@ -118,12 +146,13 @@ class SimpleSharedRingBuffer: SharedRingBuffer
 		 */
 		template<typename T> T* getReadPointer() {
 			//assert(sizeof(T) && sizeof(T) == datasize);
-			return reinterpret_cast<T*>(reinterpret_cast<size_t>(buffer) + datasize * prev);
+			return reinterpret_cast<T*>(reinterpret_cast<size_t>(buffer) + datasize * tail);
 		}
 		template<typename T> void getReadPointers(T* ptrs[]) {
 			//assert(sizeof(T) && sizeof(T) == datasize);
-			ptrs[0] = reinterpret_cast<void*>(reinterpret_cast<size_t>(buffer) + datasize * prev);
+			ptrs[0] = reinterpret_cast<void*>(reinterpret_cast<size_t>(buffer) + datasize * tail);
 		}
+#endif
 
 		/*
 		 * Get number of new samples in the ring buffer and move the reading
@@ -191,7 +220,10 @@ class SimpleSharedRingBuffer: SharedRingBuffer
 		/*
 		 * Return number of channels
 		 */
-		size_t getNumChannels() const { return 1; }
+		size_t getNumChannels() const {
+			assert(ctrl != NULL);
+			return 1; //ctrl->n_channels;
+		}
 
 		/*
 		 * Try to acquire the write lock for writing to the buffer.
@@ -225,7 +257,7 @@ class SimpleSharedRingBuffer: SharedRingBuffer
 		/*
 		 * Stream opetator to print the buffer description
 		 */
-		friend std::ostream& operator<<(std::ostream& stream, const SimpleSharedRingBuffer& buf);
+		void print(std::ostream& stream) const;
 
 		const BufferControl& getCtrl() const {
 			return *ctrl;
@@ -249,11 +281,15 @@ class SimpleSharedRingBuffer: SharedRingBuffer
 		boost::interprocess::shared_memory_object shm;
 		boost::interprocess::mapped_region mapped_ctrl, mapped_data;
 
+	public:
 		BufferControl* ctrl;
 		void* buffer;
 
-		size_t prev, version;
+		size_t tail;
+		size_t version;
 		bool owner;
+
+		friend void* transmitter_thread(void* p);
 };
 
 

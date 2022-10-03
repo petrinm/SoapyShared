@@ -1,23 +1,26 @@
 #ifndef __AUTOTX_HPP__
 #define __AUTOTX_HPP__
 
+#include <string>
 #include <memory>
 #include <SoapySDR/Device.hpp>
-
-class SimpleSharedRingBuffer;
-class TimestampedSharedRingBuffer;
+#include <boost/thread/mutex.hpp>
 
 
 struct TransmitThreadDescription {
+
+	std::string shm;
+	std::string format;
+	size_t buffer_size;
+	size_t n_channels;
+	double gain;
+
 	SoapySDR::Device* slave;
-	SoapySDR::Stream* tx_stream;
-#ifdef TIMESTAMPING
-	std::unique_ptr<TimestampedSharedRingBuffer> tx_buffer;
-#else
-	std::unique_ptr<SimpleSharedRingBuffer> tx_buffer;
-#endif
+	std::shared_ptr<boost::mutex> hw_mutex;
+
+	bool shutdown;
 };
 
-void* transmitter_thread(void* p);
+void transmitter_thread(std::shared_ptr<TransmitThreadDescription> info);
 
 #endif /* __AUTOTX_HPP__ */

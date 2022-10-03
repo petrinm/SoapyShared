@@ -5,11 +5,8 @@
 #include "AutoTx.hpp"
 
 
-#ifdef TIMESTAMPING
-#include "TimestampedSharedRingBuffer.hpp"
-#else
 #include "SimpleSharedRingBuffer.hpp"
-#endif
+
 
 #include <complex>
 #include <stdexcept>
@@ -20,86 +17,181 @@
 #include <cstring> // memcpy
 
 #include <boost/thread.hpp>
+#include <boost/thread/mutex.hpp>
 
 using namespace std;
 
 
-void* transmitter_thread(void* p) {
 
-	TransmitThreadDescription* info = static_cast<TransmitThreadDescription*>(p);
-	SoapySDR::Device* slave = info->slave;
-	SoapySDR::Stream* tx_stream = info->tx_stream;
-
-#ifdef TIMESTAMPING
-	unique_ptr<TimestampedSharedRingBuffer>tx_buffer = std::move(info->tx_buffer);
+#if 1
+#define TX_DEBUG(x)  cerr << x
 #else
-	unique_ptr<SimpleSharedRingBuffer>tx_buffer = std::move(info->tx_buffer);
+#define TX_DEBUG(x)
 #endif
 
 
-	usleep(1000000); // Delay the startup a bit so life is a bit better!
 
-	int tx_activated = 0;
-	const unsigned n_channels = 0;
+void transmitter_thread(std::shared_ptr<TransmitThreadDescription> info) {
+
+	const size_t n_channels = info->n_channels;
+	SoapySDR::Device* slave = info->slave;
+	SoapySDR::Stream* tx_stream;
+	boost::mutex& hw_mutex = *info->hw_mutex;
+
+	unique_ptr<SharedRingBuffer> tx_buffer = SimpleSharedRingBuffer::create(info->shm, boost::interprocess::read_write, info->format, info->buffer_size); // TODO: n_channels
+	const size_t buffer_read_size = 0x4000; // info->buffer_size / 4;
+	long long buffer_duration = (1000000 * buffer_read_size) / tx_buffer->getSampleRate(); // µs
+
+	bool activate_on_demand = false;
+
+	// Setup the tx stream ready on the slave devices
+	{
+		boost::mutex::scoped_lock lock(hw_mutex);
+		tx_stream = slave->setupStream(SOAPY_SDR_TX, info->format /*, n_channels, args*/);
+
+		slave->setFrequency(SOAPY_SDR_TX, 0, tx_buffer->getCenterFrequency());
+		slave->setSampleRate(SOAPY_SDR_TX, 0, tx_buffer->getSampleRate());
+		if (info->gain > 0)
+			slave->setGain(SOAPY_SDR_TX, 0, info->gain);
+
+		if (activate_on_demand == false) {
+			TX_DEBUG("Activating TX!" << endl);
+			slave->activateStream(tx_stream, /* flags = */ 0, /* timeNs = */ 0, /*numElems = */ 0);
+		}
+
+	}
+
+
+	unsigned int tx_active = false;
 	void* shmbuffs[n_channels];
+	long long timestamp = 0;
 
-	cerr << "TX thread running..." << endl;
-	while (1) {
+	TX_DEBUG("TX thread running..." << endl);
+	tx_buffer->setState(SharedRingBuffer::Ready);
+
+
+	while (info->shutdown == false) {
 
 		// Update transmission settings
-		if (tx_buffer->settingsChanged()) {
-			cerr << "New TX settings!" << endl;
-			slave->setFrequency(SOAPY_SDR_TX, 0, tx_buffer->getCenterFrequency());
-			slave->setSampleRate(SOAPY_SDR_TX, 0, tx_buffer->getSampleRate());
+		if (tx_buffer->settingsChanged() && tx_active == false) {
+			TX_DEBUG("New TX settings!" << endl);
+			{
+				boost::mutex::scoped_lock lock(hw_mutex);
+				slave->setFrequency(SOAPY_SDR_TX, 0, tx_buffer->getCenterFrequency());
+				slave->setSampleRate(SOAPY_SDR_TX, 0, tx_buffer->getSampleRate());
+				buffer_duration = (1000000 * buffer_read_size) / tx_buffer->getSampleRate(); // µs
+			}
+			usleep(50);
 		}
 
-		if (tx_buffer->getSamplesAvailable()) {
+		size_t samples_available = min(tx_buffer->getSamplesAvailable(), buffer_read_size);
+		if (samples_available) {
+			/*
+			 * New samples available!
+			 */
 
-			// Activate TX stream if needed
-			if (tx_activated == 0) {
-				cerr << "Activating TX!" << endl;
-				slave->activateStream(tx, /* flags = */ 0, /* timeNs = */ 0, /*numElems = */ 0);
+			// Activate TX stream if already active
+			if (tx_active == false) {
+				tx_active = true;
+
+				{
+					boost::mutex::scoped_lock lock(hw_mutex);
+					slave->setFrequency(SOAPY_SDR_TX, 0, tx_buffer->getCenterFrequency());
+					slave->setSampleRate(SOAPY_SDR_TX, 0, tx_buffer->getSampleRate());
+					buffer_duration = (1000000 * buffer_read_size) / tx_buffer->getSampleRate(); // µs
+				}
+				usleep(100);
+
+				if (activate_on_demand == true) {
+					TX_DEBUG("Activating TX!" << endl);
+					boost::mutex::scoped_lock lock(hw_mutex);
+					slave->activateStream(tx_stream, /* flags = */ 0, /* timeNs = */ 0, /*numElems = */ 0);
+				}
+				else {
+					TX_DEBUG("Start of burst!" << endl);
+				}
 			}
 
-			tx_activated = 1;
-			tx_buffer->getReadPointers<void>(shmbuffs);
+			int flags = 0;
+			bool end_of_burst = false;
 
-			long long timestamp;
-			size_t readElems = tx_buffer->read(64 * 1024, timestamp);
+			//if (tx_buffer->isTimestamped())
+			//	flags |= SOAPY_SDR_HAS_TIME;
+			if (tx_buffer->isEmpty() && tx_buffer->getState() == SharedRingBuffer::EndOfBurst) {
+				flags |= SOAPY_SDR_END_BURST;
+				end_of_burst = true;
+			}
 
-			// Read the real stream
-			int flags;
-			if (slave->writeStream(tx, shmbuffs, readElems, flags /*, const long long timeNs=0, const long timeoutUs=100000*/) < 0)
+			// Write data to the actual
+			int samples_written;
+			tx_buffer->getReadPointers(shmbuffs);
+			{
+				boost::mutex::scoped_lock lock(hw_mutex);
+				samples_written = slave->writeStream(tx_stream, shmbuffs, samples_available, flags, timestamp, 0);
+			}
+			TX_DEBUG("writeStream " << samples_written << "  " << flags << endl);
+			if (samples_written < 0)
 				throw runtime_error("Write failed!");
 
-			if (flags)
-				cerr << "flags: " << flags << endl;
+			tx_buffer->read(samples_written, timestamp);
+
+			if ((size_t)samples_written != samples_available) { // Incomplete write?
+				// Sleep some time before next write
+				usleep((750000 * (buffer_read_size - samples_written)) / tx_buffer->getSampleRate());
+			}
+			else if (end_of_burst) {
+				tx_active = false;
+				TX_DEBUG("End of burst" << endl);
+
+				if (activate_on_demand == true) {
+					TX_DEBUG("Deactivating TX!" << endl);
+					boost::mutex::scoped_lock lock(hw_mutex);
+					slave->deactivateStream(tx_stream, /* flags = */ 0, /* timeNs = */ 0);
+				}
+
+				tx_buffer->reset();
+				tx_buffer->setState(SharedRingBuffer::Ready);
+			}
 
 		}
-		else if (tx_activated > 0) {
+		else if (tx_active == true) {
+			/*
+			 * TX running but no new samples
+			 */
 
-			//
 			size_t channelMask = 0;
 			int flags = 0;
 			long long timeNs = 0;
 
 			// Check if TX-buffer underflow has occured
-			if (slave->readStreamStatus(tx, channelMask, flags, timeNs) == SOAPY_SDR_UNDERFLOW)
-				tx_activated--;
+			{
+				boost::mutex::scoped_lock lock(hw_mutex);
+				if (slave->readStreamStatus(tx_stream, channelMask, flags, timeNs) == SOAPY_SDR_UNDERFLOW) {
+					TX_DEBUG("TX buffer underflow!" << endl);
+					tx_active = false;
 
-#if 0
-			if (flags)
-				cerr << "status flags: " << flags << endl;
-#endif
+					// TX_DEBUG("status flags: " << flags << endl);
+					if (activate_on_demand == true) {
+						TX_DEBUG("Deactivating TX!" << endl);
+						boost::mutex::scoped_lock lock(hw_mutex);
+						slave->deactivateStream(tx_stream, /* flags = */ 0, /* timeNs = */ 0);
+					}
 
-			if (tx_activated == 0) {
-				cerr << "Deactivating TX!" << endl;
-				slave->deactivateStream(tx, /* flags = */ 0, /* timeNs = */ 0);
+					tx_buffer->reset();
+					tx_buffer->setState(SharedRingBuffer::Ready);
+					//tx_buffer->write(0, 0);
+					continue;
+				}
 			}
 
+			if (tx_buffer->isEmpty())
+				tx_buffer->wait(2 * 1000 /* us */);
+
 		}
-		else
-			usleep(500);
+		else {
+			tx_buffer->wait(10 * 1000 /* us */);
+		}
 	}
 
+	TX_DEBUG("TX thread terminating..." << endl);
 }

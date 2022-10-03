@@ -42,7 +42,8 @@ unique_ptr<TimestampedSharedRingBuffer> TimestampedSharedRingBuffer::create(cons
 		throw runtime_error("Invalid block_size!");
 
 	size_t page_size = mapped_region::get_page_size();
-	unique_ptr<TimestampedSharedRingBuffer> inst = unique_ptr<TimestampedSharedRingBuffer>(new TimestampedSharedRingBuffer(name));
+	TimestampedSharedRingBuffer* inst = new TimestampedSharedRingBuffer(name);
+	unique_ptr<TimestampedSharedRingBuffer> instt(inst);
 
 	const size_t n_channels = inst->getNumChannels();
 
@@ -81,20 +82,21 @@ unique_ptr<TimestampedSharedRingBuffer> TimestampedSharedRingBuffer::create(cons
 	inst->ctrl->center_frequency = 100.0e6;
 	inst->ctrl->sample_rate = 1e6;
 	inst->ctrl->n_channels = 1;
+	inst->ctrl->head = 0;
 	inst->ctrl->magic = TimestampedSharedRingBuffer::Magic;
 	inst->version = inst->ctrl->version;
 
 	// Map the ring buffer
 	inst->mapBuffer(control_size, mode);
 
-	return inst;
+	return instt;
 }
 
 
 unique_ptr<TimestampedSharedRingBuffer> TimestampedSharedRingBuffer::open(const string& name, boost::interprocess::mode_t mode) {
 
-	unique_ptr<TimestampedSharedRingBuffer> inst =
-		unique_ptr<TimestampedSharedRingBuffer>(new TimestampedSharedRingBuffer(name));
+	TimestampedSharedRingBuffer* inst = new TimestampedSharedRingBuffer(name);
+	unique_ptr<TimestampedSharedRingBuffer> instt(inst);
 	size_t page_size = mapped_region::get_page_size();
 
 	// Open shared memory buffer
@@ -129,18 +131,19 @@ unique_ptr<TimestampedSharedRingBuffer> TimestampedSharedRingBuffer::open(const 
 	inst->block_size = inst->ctrl->block_size;
 	inst->buffer_size = inst->n_blocks * inst->block_size;
 	inst->version = inst->ctrl->version;
-	inst->prev = inst->ctrl->end; // sync();
+	inst->tail = inst->ctrl->head;
 
 	// Map the ring buffer
 	inst->mapBuffer(control_size, mode);
 
-	return inst;
+	return instt;
 }
 
 
 TimestampedSharedRingBuffer::TimestampedSharedRingBuffer(std::string name):
-	name(name), datasize(0), buffer_size(0), block_size(0), n_blocks(0), ctrl(NULL), prev(0), owner(false)
+	name(name), datasize(0), buffer_size(0), block_size(0), n_blocks(0), ctrl(NULL), tail(0), owner(false)
 { }
+
 
 
 void TimestampedSharedRingBuffer::mapBuffer(size_t location, boost::interprocess::mode_t mode) {
@@ -276,13 +279,27 @@ TimestampedSharedRingBuffer::~TimestampedSharedRingBuffer() {
 
 void TimestampedSharedRingBuffer::sync() {
 	assert(ctrl != NULL);
-	prev = ctrl->end;
+	tail = ctrl->head;
+}
+
+
+void TimestampedSharedRingBuffer::reset() {
+	assert(ctrl != NULL);
+	ctrl->head = 0;
+	if (ctrl->tail) // TODO
+		ctrl->tail = 0;
+	ctrl->cond_new_data.notify_all();
+	tail = 0;
 }
 
 
 size_t TimestampedSharedRingBuffer::getSamplesAvailable() {
 	assert(ctrl != NULL);
-	return (ctrl->end < prev) ? (buffer_size - prev) : (ctrl->end - prev);
+	return (ctrl->head < tail) ? (buffer_size - tail) : (ctrl->head - tail);
+}
+
+bool TimestampedSharedRingBuffer::isEmpty() const {
+	return tail == ctrl->head;
 }
 
 
@@ -291,7 +308,7 @@ size_t TimestampedSharedRingBuffer::getSamplesLeft() {
 #ifdef SUPPORT_LOOPING
 	return buffer_size / 2;
 #else
-	return min(buffer_size - ctrl->end, buffer_size / 2);
+	return min(buffer_size - ctrl->head, buffer_size / 2);
 #endif
 }
 
@@ -300,25 +317,25 @@ size_t TimestampedSharedRingBuffer::read(size_t maxElems, long long& timestamp) 
 	assert(ctrl != NULL);
 
 	size_t samples_available;
-	size_t nextp = ctrl->end;
+	const size_t head = ctrl->head;
 
 	if (maxElems > buffer_size / 3)
 		throw runtime_error("Requesting too many samples! Increase the shared memory buffer size.");
 
-	if (nextp < prev) { // Has the buffer wrapped around?
+	if (head < tail) { // Has the buffer wrapped around?
 
 #ifdef SUPPORT_LOOPING
 		// Calculate the true number of new samples in the buffer
 		// and ignore that the buffer read will overflow
-		samples_available = (buffer_size - prev) + nextp;
+		samples_available = (buffer_size - tail) + head;
 #else
 		// Limit available new samples so that read stops to the end of the buffer.
 		// Next read will continue from the beginning
-		samples_available = buffer_size - prev;
+		samples_available = buffer_size - tail;
 #endif
 	}
 	else {
-		samples_available = nextp - prev;
+		samples_available = head - tail;
 	}
 
 	// If "too many" samples are available there's a change we have lost the sync
@@ -328,7 +345,7 @@ size_t TimestampedSharedRingBuffer::read(size_t maxElems, long long& timestamp) 
 
 #if 0
 	cerr << endl;
-	cerr << nextp << " < " << prev << "       " << (nextp < prev) << endl;
+	cerr << head << " < " << tail << "       " << (head < tail) << endl;
 	cerr << "samples_available = " << samples_available << "; maxElems = " << maxElems << endl;
 	cerr << "buffer_size = " << buffer_size << endl;
 	cerr << endl;
@@ -338,48 +355,52 @@ size_t TimestampedSharedRingBuffer::read(size_t maxElems, long long& timestamp) 
 	if (samples_available > maxElems)
 		samples_available = maxElems;
 
-	// Move prev-pointer
-	size_t nprev = (prev + samples_available) % buffer_size;
+	// Move tail and wrap the tail
+	size_t new_tail = (tail + samples_available) % buffer_size;
 
 #if 0
 	// Get the timestamp for the first sample
-	unsigned int prev_block = nprev / ctrl->block_size;
+	unsigned int prev_block = new_tail / ctrl->block_size;
 	if (nprev % ctrl->block_size == 0) {
 		timestamp = getMetadata(prev_block).timestamp;
 	}
 	else {
 		// Interpolate
-		unsigned int next_block = prev / ctrl->block_size;
+		unsigned int next_block = tail / ctrl->block_size;
 		long long a = getMetadata(prev_block).timestamp;
 		long long b = getMetadata(next_block).timestamp;
 		timestamp = a + (b - a) / samples_available;
 	}
 #endif
 
-	prev = nprev;
+	tail = new_tail;
 	return samples_available;
 }
 
 
 void TimestampedSharedRingBuffer::write(size_t numItems, long long timestamp) {
+	assert(numItems == ctrl->block_size);
+
+	boost::interprocess::scoped_lock<interprocess_mutex> lock(ctrl->header_mutex);
 
 #if 1
-	if (ctrl->end % ctrl->block_size != 0) {
-		cerr << "Writing are not aligned. Forcing alignment!" << endl;
-		ctrl->end = round_up(ctrl->end, ctrl->block_size);
+	if (ctrl->head % ctrl->block_size != 0) {
+		cerr << "Writing is not aligned. Forcing alignment!" << endl;
+		ctrl->head = round_up(ctrl->head, ctrl->block_size);
 	}
 #endif
 
+
 #ifdef SUPPORT_LOOPING
-	size_t new_pos = (ctrl->end + numItems) % buffer_size;
+	size_t new_pos = (ctrl->head + numItems) % buffer_size;
 #else
-	assert(ctrl->end + numItems <= buffer_size);
-	size_t new_pos = (ctrl->end + numItems);
+	assert(ctrl->head + numItems <= buffer_size);
+	size_t new_pos = (ctrl->head + numItems);
 	if (new_pos >= buffer_size) new_pos = 0;
 #endif
 
 	//cerr << "end = " << ctrl->end << "; new_pos = " << new_pos << endl;
-	ctrl->end = new_pos;
+	ctrl->head = new_pos;
 	ctrl->cond_new_data.notify_all();
 }
 
@@ -420,42 +441,46 @@ void TimestampedSharedRingBuffer::releaseWriteLock() {
 	ctrl->write_mutex.unlock();
 }
 
+
 void TimestampedSharedRingBuffer::wait(unsigned int timeoutUs) {
 	assert(ctrl != NULL);
-
 	ptime abs_timeout = boost::get_system_time() + microseconds(timeoutUs);
-	boost::interprocess::scoped_lock<interprocess_mutex> data_lock(ctrl->data_mutex, abs_timeout);
-	ctrl->cond_new_data.timed_wait(data_lock, abs_timeout);
+	boost::interprocess::scoped_lock<interprocess_mutex> lock(ctrl->header_mutex);
+	if (tail == ctrl->head) // Empty?
+		ctrl->cond_new_data.timed_wait(lock, abs_timeout);
 }
 
 void TimestampedSharedRingBuffer::wait(const boost::posix_time::ptime& abs_timeout) {
 	assert(ctrl != NULL);
-	boost::interprocess::scoped_lock<interprocess_mutex> data_lock(ctrl->data_mutex, abs_timeout);
-	ctrl->cond_new_data.timed_wait(data_lock, abs_timeout);
+	boost::interprocess::scoped_lock<interprocess_mutex> lock(ctrl->header_mutex);
+	if (tail == ctrl->head) // Empty?
+		ctrl->cond_new_data.timed_wait(lock, abs_timeout);
 }
 
 
-std::ostream& operator<<(std::ostream& stream, const TimestampedSharedRingBuffer& buf) {
-	assert(buf.ctrl != NULL);
+void TimestampedSharedRingBuffer::print(std::ostream& stream) const {
+	assert(ctrl != NULL);
+	boost::interprocess::scoped_lock<interprocess_mutex> lock(ctrl->header_mutex);
+
 	stream << endl;
-	stream << buf.name << ": (version #" << buf.ctrl->version << ")"  << endl;
+	stream << name << ": (version #" << ctrl->version << ")"  << endl;
 	//stream << "state" << endl;
-	stream << "   Format: " << buf.ctrl->format << " (" << buf.datasize << " bytes)" << endl;
-	stream << "   Channels: " << buf.ctrl->n_channels << endl;
-	stream << "   Center frequency: " << buf.ctrl->center_frequency << " Hz" << endl;
-	stream << "   Sample rate: " << buf.ctrl->sample_rate << endl;
-	stream << "   Ring buffer block count: " << hex << buf.ctrl->n_blocks << dec << endl;
+	stream << "   Format: " << ctrl->format << " (" << datasize << " bytes)" << endl;
+	stream << "   Channels: " << ctrl->n_channels << endl;
+	stream << "   Timestamping: Enabled" << endl;
+	stream << "   Center frequency: " << ctrl->center_frequency << " Hz" << endl;
+	stream << "   Sample rate: " << ctrl->sample_rate << endl;
+	stream << "   Ring buffer block count: " << hex << ctrl->n_blocks << dec << endl;
 	stream << "   Ring buffer pointer:" << hex;
-	for (size_t ch = 0; ch < buf.ctrl->n_channels; ch++)
-		stream << " 0x" << (size_t)buf.buffers[ch];
+	for (size_t ch = 0; ch < ctrl->n_channels; ch++)
+		stream << " 0x" << (size_t)buffers[ch];
 	stream << dec << endl;
-	stream << "   End: 0x" << hex << (size_t)buf.ctrl->end << endl;
+	stream << "   Head: 0x" << hex << (size_t)ctrl->head << endl;
+	stream << "   Tail: 0x" << hex << (size_t)ctrl->tail << endl;
 #ifdef SUPPORT_LOOPING
 	stream << "   Looping supported" << endl;
 #else
 	stream << "   Looping not supported" << endl;
 #endif
 	stream << endl;
-
-	return stream;
 }

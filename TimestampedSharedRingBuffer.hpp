@@ -13,85 +13,91 @@
 #include <boost/interprocess/sync/interprocess_mutex.hpp>
 #include <boost/interprocess/sync/interprocess_condition.hpp>
 
+#include "SharedRingBuffer.hpp"
 
-/*
- * Metadata unit for each Datablock
- *
- * size: 16 bytes
- */
-struct BlockMetadata {
-
-	/*
-	 * Timestamp in ns for the first sample in block
-	 * Type is ideally same 'long long' but written here out in exact byte-format.
-	 */
-	uint64_t timestamp;
-
-	/*
-	 * Possible flags are:
-	 * - SOAPY_SDR_HAS_TIME
-	 * - SOAPY_SDR_END_BURST
-	 * - SOAPY_SDR_MORE_FRAGMENTS
-	 *
-	 * 0xFFFF if not valid!
-	 */
-	uint32_t flags;
-
-	/*
-	 * Number of valid bytes in the block
-	 * Ideally this is always same as the length of the block but shorter blocks
-	 * are also support in some cases. For example when transmitting a burst.
-	 */
-	uint32_t size;
-};
-
-
-/*
- * Control structure which lives in the beginning of the SHM
- */
-struct BufferControl {
-
-	/*
-	 * Magic number to identify the control structure
-	 */
-	uint32_t magic;
-
-	/*
-	 * For the ring buffer
-	 */
-	size_t end;                     // Current position in the ring buffer
-	size_t block_size;              // Size of the timestamped blocks
-	size_t n_blocks;                // Number of blocks
-
-	/*
-	 * Metadata about the streamed data
-	 */
-	unsigned int version;           // Revision number of these settings
-	char format[8];                 // SoapySDR data format string
-	double center_frequency;        // Center frequency
-	double sample_rate;             // Sample rate of the stream
-
-	size_t n_channels;              // Number of channels
-
-	// Write lock
-	boost::interprocess::interprocess_mutex write_mutex;
-
-	// Data used to test
-	boost::interprocess::interprocess_mutex data_mutex;
-
-	// New-data-has-arrived condition variable
-	boost::interprocess::interprocess_condition cond_new_data;
-
-	/*
-	 * Array of BlockMetadata (1 per datablock)
-	 */
-	BlockMetadata meta[0];
-};
-
-
-class TimestampedSharedRingBuffer
+class TimestampedSharedRingBuffer: public SharedRingBuffer
 {
 	public:
+		struct BlockMetadata;
+		struct BufferControl;
+
+		/*
+		 * Metadata unit for each Datablock
+		 *
+		 * size: 16 bytes
+		 */
+		struct BlockMetadata {
+
+			/*
+			 * Timestamp in ns for the first sample in block
+			 * Type is ideally same 'long long' but written here out in exact byte-format.
+			 */
+			uint64_t timestamp;
+
+			/*
+			 * Possible flags are:
+			 * - SOAPY_SDR_HAS_TIME
+			 * - SOAPY_SDR_END_BURST
+			 * - SOAPY_SDR_MORE_FRAGMENTS
+			 *
+			 * 0xFFFF if not valid!
+			 */
+			uint32_t flags;
+
+			/*
+			 * Number of valid bytes in the block
+			 * Ideally this is always same as the length of the block but shorter blocks
+			 * are also support in some cases. For example when transmitting a burst.
+			 */
+			uint32_t size;
+		};
+
+		/*
+		 * Control structure which lives in the beginning of the SHM
+		 */
+		struct BufferControl {
+
+			/*
+			 * Magic number to identify the control structure
+			 */
+			uint32_t magic;
+			char label[32];                 // Text label for the device
+
+			/*
+			 * For the ring buffer
+			 */
+			size_t head;                    // Current position in the ring buffer
+			size_t tail;
+			enum BufferState state;
+
+			size_t n_channels;              // Number of channels
+			size_t block_size;              // Size of the timestamped blocks
+			size_t n_blocks;                // Number of blocks
+
+			/*
+			 * Metadata about the streamed data
+			 */
+			unsigned int version;           // Revision number of these settings
+			char format[8];                 // SoapySDR data format string
+			double center_frequency;        // Center frequency
+			double sample_rate;             // Sample rate of the stream
+
+
+			// Write access mutex
+			boost::interprocess::interprocess_mutex write_mutex;
+
+			// Header data mutex
+			boost::interprocess::interprocess_mutex header_mutex;
+
+			// New-data-has-arrived condition variable
+			boost::interprocess::interprocess_condition cond_new_data;
+
+			/*
+			 * Array of BlockMetadata (1 per datablock)
+			 */
+			BlockMetadata meta[0];
+		};
+
 
 		typedef uint64_t Timestamp;
 
@@ -118,10 +124,17 @@ class TimestampedSharedRingBuffer
 		 */
 		~TimestampedSharedRingBuffer();
 
+		/**/
+		enum BufferState getState() const { return ctrl->state; }
+		void setState(enum BufferState state) { ctrl->state = state; }
+
 		/*
 		 * Ignore history and move current pointer to end.
 		 */
 		void sync();
+
+		/**/
+		void reset();
 
 		/*
 		 * Get number of available new samples till end pointer or end of the buffer
@@ -129,21 +142,44 @@ class TimestampedSharedRingBuffer
 		size_t getSamplesAvailable();
 
 		/*
+		 * Is the ring buffer empty?
+		 */
+		bool isEmpty() const;
+
+		/*
 		 * Get number of samples that can be written to TX position
 		 */
 		size_t getSamplesLeft();
 
+		void* getWritePointer() {
+			return reinterpret_cast<void*>(reinterpret_cast<size_t>(buffers[0]) + datasize * ctrl->head);
+		}
+		void getWritePointers(void* ptrs[]) {
+			for (size_t ch = 0; ch < ctrl->n_channels; ch++)
+				ptrs[ch] =  reinterpret_cast<void*>(reinterpret_cast<size_t>(buffers[ch]) + datasize * ctrl->head);
+		}
+
+		void* getReadPointer() {
+			return reinterpret_cast<void*>(reinterpret_cast<size_t>(buffers[0]) + datasize * tail);
+		}
+		void getReadPointers(void* ptrs[]) {
+			for (size_t ch = 0; ch < ctrl->n_channels; ch++)
+				ptrs[ch] = reinterpret_cast<void*>(reinterpret_cast<size_t>(buffers[ch]) + datasize * tail);
+		}
+
+
+#if 0
 		/*
 		 * Return pointer to current read/write position
 		 */
 		template<typename T> T* getWritePointer() {
 			//assert(sizeof(T) && sizeof(T) == datasize);
-			return static_cast<T*>(reinterpret_cast<size_t>(buffers[0]) + datasize * ctrl->end);
+			return static_cast<T*>(reinterpret_cast<size_t>(buffers[0]) + datasize * ctrl->head);
 		}
 		template<typename T> void getWritePointers(T* ptrs[]) {
 			//assert(sizeof(T) && sizeof(T) == datasize);
 			for (size_t ch = 0; ch < ctrl->n_channels; ch++)
-				ptrs[ch] =  reinterpret_cast<T*>(reinterpret_cast<size_t>(buffers[ch]) + datasize * ctrl->end);
+				ptrs[ch] =  reinterpret_cast<T*>(reinterpret_cast<size_t>(buffers[ch]) + datasize * ctrl->head);
 		}
 
 		/*
@@ -151,13 +187,14 @@ class TimestampedSharedRingBuffer
 		 */
 		template<typename T> T* getReadPointer() {
 			//assert(sizeof(T) && sizeof(T) == datasize);
-			return static_cast<T*>(reinterpret_cast<size_t>(buffers[0]) + datasize * prev);
+			return static_cast<T*>(reinterpret_cast<size_t>(buffers[0]) + datasize * tail);
 		}
 		template<typename T> void getReadPointers(T* ptrs[]) {
 			//assert(sizeof(T) && sizeof(T) == datasize);
 			for (size_t ch = 0; ch < ctrl->n_channels; ch++)
-				ptrs[ch] = reinterpret_cast<T*>(reinterpret_cast<size_t>(buffers[ch]) + datasize * prev);
+				ptrs[ch] = reinterpret_cast<T*>(reinterpret_cast<size_t>(buffers[ch]) + datasize * tail);
 		}
+#endif
 
 		/*
 		 * Call getPointer() before calling this function!
@@ -254,7 +291,7 @@ class TimestampedSharedRingBuffer
 		/*
 		 * Stream opetator to print the buffer description
 		 */
-		friend std::ostream& operator<<(std::ostream& stream, const TimestampedSharedRingBuffer& buf);
+		void print(std::ostream& stream) const;
 
 		const BufferControl& getCtrl() const {
 			return *ctrl;
@@ -293,7 +330,8 @@ class TimestampedSharedRingBuffer
 		BufferControl* ctrl;
 		std::vector<void*> buffers;
 
-		size_t prev, version;
+		size_t tail;
+		size_t version;
 		bool owner;
 };
 
