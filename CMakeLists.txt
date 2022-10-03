@@ -2,7 +2,7 @@
 # Project setup -- only needed if device support is a stand-alone build
 # We recommend that the support module be built in-tree with the driver.
 ########################################################################
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.16)
 
 project(SoapyShared CXX)
 enable_testing()
@@ -24,12 +24,14 @@ set (CMAKE_CXX_STANDARD_REQUIRED ON)
 
 ADD_DEFINITIONS(-DSUPPORT_LOOPING)
 
+
+
 IF (MSVC)
   # TODO
 ELSE()
-  set (CMAKE_CXX_FLAGS "-Wno-pointer-arith -Wno-unused-parameter") # Silence pointer arithmetic warnings
-
-  SET(SOAPY_SHARED_LIBRARIES ${SOAPY_SHARED_LIBRARIES} rt pthread)
+  set (CMAKE_CXX_FLAGS "-Wno-unused-parameter") # Silence pointer arithmetic warnings
+  #-Wno-pointer-arith
+  SET(SoapyShared_LIBRARIES ${SoapyShared_LIBRARIES} rt pthread)
 ENDIF(MSVC)
 
 
@@ -47,7 +49,7 @@ message(STATUS "SoapySDR include directories: ${SoapySDR_INCLUDE_DIRS}")
 ########################################################################
 find_package(Boost 1.36.0 REQUIRED COMPONENTS system thread filesystem)
 include_directories(${Boost_INCLUDE_DIRS})
-SET(SOAPY_SHARED_LIBRARIES ${SOAPY_SHARED_LIBRARIES} ${Boost_LIBRARIES})
+SET(SoapyShared_LIBRARIES ${SoapyShared_LIBRARIES} ${Boost_LIBRARIES})
 ADD_DEFINITIONS(-DBOOST_ALL_DYN_LINK)
 
 message(STATUS "Boost include directories: ${Boost_INCLUDE_DIRS}")
@@ -59,11 +61,11 @@ message(STATUS "Boost libraries: ${Boost_LIBRARIES}")
 # Setup Liquid-DSP
 ########################################################################
 find_package(Liquid REQUIRED)
-include_directories(${LIQUID_INCLUDES})
-SET(SOAPY_SHARED_LIBRARIES ${SOAPY_SHARED_LIBRARIES} ${LIQUID_LIBRARIES})
+include_directories(${Liquid_INCLUDES})
+SET(SoapyShared_LIBRARIES ${SoapyShared_LIBRARIES} ${Liquid_LIBRARIES})
 
-message(STATUS "Liquid-DSP include directories: ${LIQUID_INCLUDES}")
-message(STATUS "Liquid-DSP libraries: ${LIQUID_LIBRARIES}")
+message(STATUS "Liquid-DSP include directories: ${Liquid_INCLUDES}")
+message(STATUS "Liquid-DSP libraries: ${Liquid_LIBRARIES}")
 
 ########################################################################
 # Setup SoapySDR module
@@ -71,5 +73,8 @@ message(STATUS "Liquid-DSP libraries: ${LIQUID_LIBRARIES}")
 SOAPY_SDR_MODULE_UTIL(
     TARGET SoapyShared
     SOURCES SoapySeeder.cpp SoapyLeecher.cpp SimpleSharedRingBuffer.cpp TimestampedSharedRingBuffer.cpp AutoTx.cpp
-    LIBRARIES ${SOAPY_SHARED_LIBRARIES}
+    LIBRARIES ${SoapyShared_LIBRARIES}
 )
+
+
+add_subdirectory(units)

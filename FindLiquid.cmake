@@ -1,22 +1,22 @@
-# - Find LIQUID
-# Find the native LIQUID includes and library
+# - Find LiquidDSP
+# Find the native LiquidDSP includes and library
 #
-#  LIQUID_INCLUDES    - where to find LIQUID.h
-#  LIQUID_LIBRARIES   - List of libraries when using LIQUID.
-#  LIQUID_FOUND       - True if LIQUID found.
+#  Liquid_INCLUDES    - where to find liquid.h
+#  Liquid_LIBRARIES   - List of libraries when using Liquid.
+#  Liquid_FOUND       - True if LiquidDSP found.
 
-if (LIQUID_INCLUDES)
+if (Liquid_INCLUDES)
   # Already in cache, be silent
-  set (LIQUID_FIND_QUIETLY TRUE)
-endif (LIQUID_INCLUDES)
+  set (Liquid_FIND_QUIETLY TRUE)
+endif (Liquid_INCLUDES)
 
-find_path (LIQUID_INCLUDES liquid/liquid.h)
+find_path (Liquid_INCLUDES liquid/liquid.h)
 
-find_library (LIQUID_LIBRARIES NAMES liquid)
+find_library (Liquid_LIBRARIES NAMES liquid)
 
-# handle the QUIETLY and REQUIRED arguments and set LIQUID_FOUND to TRUE if
+# handle the QUIETLY and REQUIRED arguments and set Liquid_FOUND to TRUE if
 # all listed variables are TRUE
 include (FindPackageHandleStandardArgs)
-find_package_handle_standard_args (LIQUID DEFAULT_MSG LIQUID_LIBRARIES LIQUID_INCLUDES)
+find_package_handle_standard_args (Liquid DEFAULT_MSG Liquid_LIBRARIES Liquid_INCLUDES)
 
-#mark_as_advanced (LIQUID_LIBRARIES LIQUID_INCLUDES)
+#mark_as_advanced (Liquid_LIBRARIES Liquid_INCLUDES)
