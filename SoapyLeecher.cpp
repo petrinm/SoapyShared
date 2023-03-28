@@ -552,8 +552,6 @@ int SoapyLeecher::writeStream(SoapySDR::Stream *stream, const void *const *buffs
 		void* shm_buffs[n_channels];
 		tx_buffer->getWritePointers(shm_buffs);
 
-#ifdef SUPPORT_LOOPING
-
 		// TODO: Allow partial writes?
 		size_t samples_written = numElems; // min(tx_buffer->getSamplesLeft(), numElems);
 		for (size_t ch = 0; ch < n_channels; ch++)
@@ -561,9 +559,8 @@ int SoapyLeecher::writeStream(SoapySDR::Stream *stream, const void *const *buffs
 
 		tx_buffer->write(samples_written, timeNs);
 
-#else
 
-		void* host_buffs[n_channels];
+#ifndef LOCK_WHEN_ACTIVATED
 		for (size_t ch = 0; ch < n_channels; ch++)
 			host_buffs[ch] = buffs[ch];
 

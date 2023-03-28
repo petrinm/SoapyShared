@@ -13,16 +13,13 @@
 #include <boost/interprocess/sync/scoped_lock.hpp>
 
 
-#ifdef SUPPORT_LOOPING
+
 #if defined(__linux__) || defined(__APPLE__)
 	#include <unistd.h>
 #elif defined(_WIN32)
 	#include <Windows.h>
-#else
-	#warning "Looping is not supported on this platform!"
-	#undefine SUPPORT_LOOPING
 #endif
-#endif
+
 
 
 using namespace std;
@@ -161,7 +158,7 @@ void TimestampedSharedRingBuffer::mapBuffer(size_t location, boost::interprocess
 	for (size_t ch = 0; ch < n_channels; ch++) {
 
 		void* buffer;
-#ifdef SUPPORT_LOOPING
+
 #if defined(__linux__) || defined(__APPLE__)
 		/*
 		 * POSIX implementation
@@ -203,14 +200,6 @@ void TimestampedSharedRingBuffer::mapBuffer(size_t location, boost::interprocess
 
 #else
 	#error "Looping is not supported on this platform!"
-#endif /* SUPPORT_LOOPING */
-
-#else
-		/*
-		 * No looping just direct mapping using Boost
-		 */
-		mapped_data = mapped_region(shm, mode, location, buffer_size);
-		buffer = mapped_data.get_address();
 #endif
 
 		buffers[ch] = buffer;
@@ -247,26 +236,20 @@ bool TimestampedSharedRingBuffer::checkSHM(std::string name) {
 
 
 TimestampedSharedRingBuffer::~TimestampedSharedRingBuffer() {
-	// Unmap the manually mapped regions
-	// Boost's SHM and mappings' done with it destroyes themselves automatically
-
 	if (owner && ctrl)
 		ctrl->magic = 0x0;
 
-	const size_t n_channels = getNumChannels() ;
-	for (size_t ch = 0; ch < n_channels; ch++) {
-
-		if (ch >= buffers.size())
-			break;
-
+	// Unmap the manually mapped regions
+	// Boost's SHM and mappings' done with it destroyes themselves automatically
+	for (size_t ch = 0; ch < buffers.size(); ch++)
+	{
 		void* buffer = buffers[ch];
 		size_t sz = datasize * buffer_size;
 
 		if (buffer != NULL) {
-
-#if defined(SUPPORT_LOOPING) && (defined(__linux__) || defined(__APPLE__))
+#if (defined(__linux__) || defined(__APPLE__))
 			munmap(buffer, 2 * sz);
-#elif defined(SUPPORT_LOOPING) && defined(_WIN32)
+#elif defined(_WIN32)
 			UnmapViewOfFile(buffer);
 			UnmapViewOfFile(buffer + sz);
 #endif
@@ -308,11 +291,7 @@ bool TimestampedSharedRingBuffer::isEmpty() const {
 
 size_t TimestampedSharedRingBuffer::getSamplesLeft() {
 	assert(ctrl != NULL);
-#ifdef SUPPORT_LOOPING
 	return buffer_size / 2;
-#else
-	return min(buffer_size - ctrl->head, buffer_size / 2);
-#endif
 }
 
 
@@ -327,15 +306,10 @@ size_t TimestampedSharedRingBuffer::read(size_t maxElems, long long& timestamp) 
 
 	if (head < tail) { // Has the buffer wrapped around?
 
-#ifdef SUPPORT_LOOPING
 		// Calculate the true number of new samples in the buffer
 		// and ignore that the buffer read will overflow
 		samples_available = (buffer_size - tail) + head;
-#else
-		// Limit available new samples so that read stops to the end of the buffer.
-		// Next read will continue from the beginning
-		samples_available = buffer_size - tail;
-#endif
+
 	}
 	else {
 		samples_available = head - tail;
@@ -393,18 +367,14 @@ void TimestampedSharedRingBuffer::write(size_t numItems, long long timestamp) {
 	}
 #endif
 
-
-#ifdef SUPPORT_LOOPING
-	size_t new_pos = (ctrl->head + numItems) % buffer_size;
-#else
-	assert(ctrl->head + numItems <= buffer_size);
-	size_t new_pos = (ctrl->head + numItems);
-	if (new_pos >= buffer_size) new_pos = 0;
-#endif
-
 	//cerr << "end = " << ctrl->end << "; new_pos = " << new_pos << endl;
+	size_t new_pos = (ctrl->head + numItems) % buffer_size;
 	ctrl->head = new_pos;
-	ctrl->cond_new_data.notify_all();
+
+	if (ctrl->mode == OneToMany) {
+		// If used in one-to-many mode aka as rx buffer, notify readers
+		ctrl->cond_new_data.notify_all();
+	}
 }
 
 
@@ -480,10 +450,5 @@ void TimestampedSharedRingBuffer::print(std::ostream& stream) const {
 	stream << dec << endl;
 	stream << "   Head: 0x" << hex << (size_t)ctrl->head << endl;
 	stream << "   Tail: 0x" << hex << (size_t)ctrl->tail << endl;
-#ifdef SUPPORT_LOOPING
-	stream << "   Looping supported" << endl;
-#else
-	stream << "   Looping not supported" << endl;
-#endif
 	stream << endl;
 }

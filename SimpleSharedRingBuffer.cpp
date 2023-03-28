@@ -14,16 +14,12 @@
 #include <boost/interprocess/sync/scoped_lock.hpp>
 
 
-#ifdef SUPPORT_LOOPING
 #if defined(_POSIX_VERSION)
 	#include <unistd.h>
 #elif defined(_WIN32)
 	#include <Windows.h>
-#else
-	#warning "Looping is not supported on this platform!"
-	#undefine SUPPORT_LOOPING
 #endif
-#endif
+
 
 using namespace std;
 using namespace boost::interprocess;
@@ -117,56 +113,59 @@ void SimpleSharedRingBuffer::mapBuffer(boost::interprocess::mode_t mode) {
 	size_t sz = datasize * buffer_size;
 	size_t page_size = mapped_region::get_page_size();
 
-#if defined(SUPPORT_LOOPING)
+	buffers.resize(ctrl->n_channels);
+	std::fill(buffers.begin(), buffers.end(), nullptr);
+
+	for (size_t ch = 0; ch < ctrl->n_channels; ch++) {
+		void *buffer;
+
+
 #if defined(__linux__) || defined(__APPLE__)
-	/*
-	 * POSIX implementation
-	 */
+		/*
+		* POSIX implementation
+		*/
 
-	// Get virtual address space of double size
-	buffer = mmap(NULL, 2 * sz, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	if (buffer == MAP_FAILED)
-		throw runtime_error("Out of virtual memory");
+		// Get virtual address space of double size
+		buffer = mmap(NULL, 2 * sz, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		if (buffer == MAP_FAILED)
+			throw runtime_error("Out of virtual memory");
 
-	int fd = shm.get_mapping_handle().handle;
-	mmap(buffer, sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, page_size);
-	mmap((uint8_t*)buffer + sz, sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, page_size);
-	// TODO: Correct access modes
+		int fd = shm.get_mapping_handle().handle;
+		mmap(buffer, sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, page_size);
+		mmap((uint8_t*)buffer + sz, sz, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, page_size);
+		// TODO: Correct access modes
 
-	// Maybe:
-	// mapped_data = mapped_region(shm, mode, page_size, sz, buffer);
-	// mapped_data_loop = mapped_region(shm, mode, page_size, sz, &buffer[sz]);
+		// Maybe:
+		// mapped_data = mapped_region(shm, mode, page_size, sz, buffer);
+		// mapped_data_loop = mapped_region(shm, mode, page_size, sz, &buffer[sz]);
 
 #elif defined(_WIN32)
-	/*
-	 * Windows implementation
-	 */
+		/*
+		* Windows implementation
+		*/
 
-	// Make a temperatur virtual memory alloc to see where there's
-	void* virtual_ptr = VirtualAlloc(0, 2 * sz, MEM_RESERVE, PAGE_NOACCESS);
-	if (virtual_ptr == NULL)
-		throw runtime_error("Out of virtual memory");
-	VirtualFree(virtual_ptr, 0, MEM_RELEASE);
+		// Make a temporary virtual memory alloc to see where the windows maps its  
+		void* virtual_ptr = VirtualAlloc(0, 2 * sz, MEM_RESERVE, PAGE_NOACCESS);
+		if (virtual_ptr == NULL)
+			throw runtime_error("Out of virtual memory");
+		VirtualFree(virtual_ptr, 0, MEM_RELEASE);
 
-	HANDLE hMapFile = shm.get_mapping_handle().handle;
-	baseptr = MapViewOfFileEx(hMapFile, FILE_MAP_ALL_ACCESS, 0, page_size, sz, virtual_ptr);
-	MapViewOfFileEx(mapping, FILE_MAP_ALL_ACCESS, 0, 0, page_size + sz, virtual_ptr + sz);
-	// TODO: Correct access modes
+		HANDLE hMapFile = shm.get_mapping_handle().handle;
+		baseptr = MapViewOfFileEx(hMapFile, FILE_MAP_ALL_ACCESS, 0, page_size, sz, virtual_ptr);
+		MapViewOfFileEx(mapping, FILE_MAP_ALL_ACCESS, 0, 0, page_size + sz, virtual_ptr + sz);
+		// TODO: Correct access modes
 
-	cerr << "Org " << hex << virtual_ptr << "   " << baseptr << dec << endl;
-	if (virtual_ptr != baseptr)
-		throw runtime_error("Fuck");
+		cerr << "Org " << hex << virtual_ptr << "   " << baseptr << dec << endl;
+		if (virtual_ptr != baseptr)
+			throw runtime_error("Failed to map shared memory to defined location!");
 
 #else
 	#error "Looping is not supported on this platform!"
-#endif /* SUPPORT_LOOPING */
-#else
-	/*
-	 * No looping just direct mapping using Boost
-	 */
-	mapped_data = mapped_region(shm, mode, page_size, sz);
-	buffer = mapped_data.get_address();
 #endif
+
+		buffers[ch] = buffer;
+	}
+
 }
 
 
@@ -183,7 +182,6 @@ bool SimpleSharedRingBuffer::checkSHM(std::string name) {
 #else
 		// Try to open the SHM
 		shared_memory_object shm(open_only, name.c_str(), read_only);
-		// TODO: CubicSDR crashes here for unknown reason.....
 #endif
 
 		// Map the buffer control section
@@ -197,7 +195,6 @@ bool SimpleSharedRingBuffer::checkSHM(std::string name) {
 		return true;
 	}
 	catch(...) {
-		cout << "FA" << endl;
 		return false;
 	}
 }
@@ -211,16 +208,25 @@ SimpleSharedRingBuffer::~SimpleSharedRingBuffer() {
 
 	// Unmap the manually mapped regions
 	// Boost's SHM and mappings' done with it destroyes themselves automatically
-#if defined(SUPPORT_LOOPING) && (defined(__linux__) || defined(__APPLE__))
-	size_t sz = datasize * buffer_size;
-	munmap(buffer, 2 * sz);
-#elif defined(SUPPORT_LOOPING) && defined(_WIN32)
-	UnmapViewOfFile(buffer);
-	UnmapViewOfFile(buffer + sz);
-#endif
+	for (size_t ch = 0; ch < buffers.size(); ch++)
+	{
+		void *buffer = buffers[ch];
+		size_t sz = datasize * buffer_size;
 
-	if (owner)
+		if (buffer != NULL) {
+#if (defined(__linux__) || defined(__APPLE__))
+			munmap(buffer, 2 * sz);
+#elif defined(_WIN32)
+			UnmapViewOfFile(buffer);
+			UnmapViewOfFile(buffer + sz);
+#endif
+		}
+	}
+
+	if (owner) {
+		SHMRegistry::remove(name);
 		shared_memory_object::remove(name.c_str());
+	}
 }
 
 
@@ -335,46 +341,28 @@ size_t SimpleSharedRingBuffer::read(void* buff, size_t maxElems, long long& time
 }
 
 
-void SimpleSharedRingBuffer::write(size_t numItems, long long timestamp) {
+void SimpleSharedRingBuffer::write(size_t numElems, long long timestamp)
+{
+	// Check write permissions
+	if (0) // ctrl->mode == )
+		throw runtime_error("Writing to buffer is not allowed in this mode");
 
 	boost::interprocess::scoped_lock<interprocess_mutex> lock(ctrl->header_mutex);
 
-#ifdef SUPPORT_LOOPING
-	size_t new_pos = (ctrl->head + numItems) % buffer_size;
-#else
-	assert(ctrl->head + numItems <= buffer_size);
-	size_t new_pos = (ctrl->head + numItems);
-	if (new_pos >= buffer_size) new_pos = 0;
+	//cerr << ((ctrl->head >= ctrl->tail) ? (buffer_size + (ctrl->tail - ctrl->head) - 1) : (ctrl->tail - ctrl->head - 1)) << " ";
+	//cerr << "head = " << ctrl->head;
+	ctrl->head = (ctrl->head + numElems) % buffer_size;
+	//cerr << "; new_pos = " << ctrl->head << " ";
+	//cerr << ((ctrl->head >= ctrl->tail) ? (buffer_size + (ctrl->tail - ctrl->head) - 1) : (ctrl->tail - ctrl->head - 1)) << endl;
+
 #endif
 
-	//cerr << "head = " << ctrl->head << "; new_pos = " << new_pos << endl;
-	ctrl->head = new_pos;
-	//if (notify)
-	ctrl->cond_new_data.notify_all();
+	// if (ctrl->mode == OneToMany){
+	// If used in one-to-many mode aka as rx buffer, notify readers
+	cout << "head notify " << boost::get_system_time() << endl;
+	ctrl->cond_head.notify_all();
 }
 
-
-void SimpleSharedRingBuffer::write(void* buff, size_t numElems, long long timestamp) {
-	assert(ctrl->n_channels == 1);
-	boost::interprocess::scoped_lock<interprocess_mutex> lock(ctrl->header_mutex);
-
-	void* dst = getWritePointer();
-	size_t samples_written = min(getSamplesLeft(), numElems);
-	memcpy(dst, buff, samples_written * getDatasize());
-	write(samples_written, timestamp);
-
-#ifndef SUPPORT_LOOPING
-	// If looped memory space is not used a second write might be necessary
-	if (samples_written < numElems) {
-		cerr << '%' << endl;
-		dst = getWritePointer();
-		samples_written = min(getSamplesLeft(), numElems - samples_written);
-		memcpy(dst, buff, samples_written * getDatasize());
-		write(numElems - samples_written, 0);
-	}
-#endif
-	//return samples_written;
-}
 
 std::string SimpleSharedRingBuffer::getFormat() const {
 	return (ctrl != NULL) ? ctrl->format :  "-";
@@ -427,7 +415,6 @@ void SimpleSharedRingBuffer::wait(const boost::posix_time::ptime& abs_timeout) {
 		ctrl->cond_new_data.timed_wait(lock, abs_timeout);
 }
 
-
 void SimpleSharedRingBuffer::print(std::ostream& stream) const {
 	assert(ctrl != NULL);
 	boost::interprocess::scoped_lock<interprocess_mutex> lock(ctrl->header_mutex);
@@ -451,10 +438,5 @@ void SimpleSharedRingBuffer::print(std::ostream& stream) const {
 	stream << "   Head: 0x" << hex << (size_t)ctrl->head << endl;
 	stream << "   Tail: 0x" << hex << (size_t)tail << "  " << (size_t)ctrl->tail << endl;
 
-#ifdef SUPPORT_LOOPING
-	stream << "   Looping supported" << endl;
-#else
-	stream << "   Looping not supported" << endl;
-#endif
 	stream << endl;
 }

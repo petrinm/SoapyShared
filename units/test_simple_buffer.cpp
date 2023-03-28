@@ -48,7 +48,7 @@ public:
 		CPPUNIT_ASSERT(a->getSampleRate() == b->getSampleRate());
 	}
 
-#ifdef SUPPORT_LOOPING
+
 	/*
 	 * Test that buffer can be overread
 	 */
@@ -71,7 +71,7 @@ public:
 			CPPUNIT_ASSERT(wptr[i] == rptr[buffer_size + i]);
 
 	}
-#endif
+
 
 	void testSimpleReadWrite() {
 		a->reset();
@@ -105,11 +105,9 @@ public:
 		long long t;
 
 		a->write(buffer_size - 64, 0);
-#ifdef SUPPORT_LOOPING
+
 		CPPUNIT_ASSERT(a->getSamplesLeft() > 64);
-#else
-		CPPUNIT_ASSERT(a->getSamplesLeft() == 64);
-#endif
+
 		CPPUNIT_ASSERT(a->getSamplesAvailable() == buffer_size - 64);
 
 
