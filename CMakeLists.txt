@@ -76,5 +76,4 @@ SOAPY_SDR_MODULE_UTIL(
     LIBRARIES ${SoapyShared_LIBRARIES}
 )
 
-
-add_subdirectory(units)
+#add_subdirectory(units)
