@@ -8,6 +8,7 @@
 #include <SoapySDR/Formats.hpp>
 
 #include "TimestampedSharedRingBuffer.hpp"
+#include "Utils.hpp"
 
 #include <boost/interprocess/sync/scoped_lock.hpp>
 
@@ -59,6 +60,8 @@ unique_ptr<TimestampedSharedRingBuffer> TimestampedSharedRingBuffer::create(cons
 	inst->owner = true;
 	inst->shm = shared_memory_object(open_or_create, name.c_str(), mode); // TODO: should be create_only to be sure
 	inst->shm.truncate(control_size + n_channels * inst->datasize * n_blocks * block_size);
+	
+	SHMRegistry::add(name);
 
 	inst->n_blocks = n_blocks;
 	inst->block_size = block_size;
@@ -271,7 +274,7 @@ TimestampedSharedRingBuffer::~TimestampedSharedRingBuffer() {
 	}
 
 	if (owner) {
-		cout << "detroying shm " << name << endl;
+		SHMRegistry::remove(name);
 		shared_memory_object::remove(name.c_str());
 	}
 }

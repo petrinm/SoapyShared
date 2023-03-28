@@ -9,6 +9,7 @@
 #include <SoapySDR/Formats.hpp>
 
 #include "SimpleSharedRingBuffer.hpp"
+#include "Utils.hpp"
 
 #include <boost/interprocess/sync/scoped_lock.hpp>
 

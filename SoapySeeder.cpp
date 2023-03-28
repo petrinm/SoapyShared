@@ -9,6 +9,7 @@
 #include "TimestampedSharedRingBuffer.hpp"
 
 #include "AutoTx.hpp"
+#include "Utils.hpp"
 
 //#define DEBUG
 
@@ -35,7 +36,7 @@ public:
 
 
 SoapySeeder::SoapySeeder(const SoapySDR::Kwargs &args) :
-	shm("/soapy"),
+	shm("soapy"),
 	timestamped(false),
 	rx_stream(NULL),
 	block_size(0x2000),

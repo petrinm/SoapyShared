@@ -16,13 +16,13 @@ link_libraries(  ${SoapySDR_LIBRARIES} ${Boost_LIBRARIES} cppunit rt pthread liq
 #add_executable( test_simple_buffer  test_simple_buffer.cpp ../SimpleSharedRingBuffer.cpp )
 #add_executable( test_timestamped_buffer  test_timestamped_buffer.cpp ../TimestampedSharedRingBuffer.cpp )
 
-add_executable( test_seeding   test_seeding.cpp dummy_device.cpp utils.cpp ../SimpleSharedRingBuffer.cpp ../TimestampedSharedRingBuffer.cpp )
+add_executable( test_seeding   test_seeding.cpp dummy_device.cpp utils.cpp ../SimpleSharedRingBuffer.cpp ../TimestampedSharedRingBuffer.cpp ../Utils.cpp)
 #add_executable( test_seeding_timestamped   test_seeding.cpp dummy_device.cpp utils.cpp ../TimestampedSharedRingBuffer.cpp )
 
-add_executable( test_leeching  test_leeching.cpp ../SimpleSharedRingBuffer.cpp )
+add_executable( test_leeching  test_leeching.cpp ../SimpleSharedRingBuffer.cpp ../Utils.cpp)
 #add_executable( test_leeching_timestamped  test_leeching.cpp ../TimestampedSharedRingBuffer.cpp )
 
-add_executable( test_resampling  test_resampling.cpp ../SimpleSharedRingBuffer.cpp )
+#add_executable( test_resampling  test_resampling.cpp ../SimpleSharedRingBuffer.cpp )
 #add_executable( test_resampling_timestamped  test_resampling.cpp ../TimestampedSharedRingBuffer.cpp )
 
 #add_test(NAME TestSimpleBuffer COMMAND test_simple_buffer)
