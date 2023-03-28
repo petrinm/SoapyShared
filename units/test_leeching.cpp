@@ -38,7 +38,8 @@ public:
 		/*
 		 * Open shared memory buffer
 		 */
-		std::unique_ptr<SimpleSharedRingBuffer> shm_buffer = SimpleSharedRingBuffer::create(shm_name, boost::interprocess::read_write, SOAPY_SDR_CF32, buffer_size);
+		std::unique_ptr<SimpleSharedRingBuffer> shm_buffer = SimpleSharedRingBuffer::create(
+			shm_name, SharedRingBuffer::BufferMode::OneToMany, boost::interprocess::read_write, SOAPY_SDR_CF32, buffer_size);
 
 		shm_buffer->acquireWriteLock();
 		shm_buffer->setCenterFrequency(sdr_frequency);

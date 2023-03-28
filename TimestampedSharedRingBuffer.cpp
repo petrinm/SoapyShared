@@ -31,8 +31,8 @@ static int round_up(int num, int factor) {
 	return num + factor - 1 - (num + factor - 1) % factor;
 }
 
-
-unique_ptr<TimestampedSharedRingBuffer> TimestampedSharedRingBuffer::create(const string& name, boost::interprocess::mode_t mode, string format, size_t n_blocks, size_t block_size) {
+unique_ptr<TimestampedSharedRingBuffer> TimestampedSharedRingBuffer::create(const string &name, boost::interprocess::mode_t mode, string format, size_t n_blocks, size_t block_size, size_t n_channels)
+{
 
 	if (n_blocks == 0)
 		throw runtime_error("Invalid n_blocks!");
@@ -42,8 +42,6 @@ unique_ptr<TimestampedSharedRingBuffer> TimestampedSharedRingBuffer::create(cons
 	size_t page_size = mapped_region::get_page_size();
 	TimestampedSharedRingBuffer* inst = new TimestampedSharedRingBuffer(name);
 	unique_ptr<TimestampedSharedRingBuffer> instt(inst);
-
-	const size_t n_channels = inst->getNumChannels();
 
 	inst->datasize = SoapySDR::formatToSize(format);
 	if (inst->datasize == 0)
@@ -55,6 +53,7 @@ unique_ptr<TimestampedSharedRingBuffer> TimestampedSharedRingBuffer::create(cons
 
 	// Create new shared memory allocation
 	inst->owner = true;
+
 	inst->shm = shared_memory_object(open_or_create, name.c_str(), mode); // TODO: should be create_only to be sure
 	inst->shm.truncate(control_size + n_channels * inst->datasize * n_blocks * block_size);
 	
@@ -64,9 +63,9 @@ unique_ptr<TimestampedSharedRingBuffer> TimestampedSharedRingBuffer::create(cons
 	inst->block_size = block_size;
 	inst->buffer_size = n_blocks * block_size;
 
-	// TODO: fixme
+	// Initialize ring buffer pointers to zeros
 	inst->buffers.resize(n_channels);
-	inst->buffers[0] = NULL;
+	std::fill(inst->buffers.begin(), inst->buffers.end(), nullptr);
 
 	// Map and initialize the control struct
 	inst->mapped_ctrl = mapped_region(inst->shm, mode, 0, sizeof(BufferControl));
@@ -81,7 +80,7 @@ unique_ptr<TimestampedSharedRingBuffer> TimestampedSharedRingBuffer::create(cons
 	inst->ctrl->block_size = block_size;
 	inst->ctrl->center_frequency = 100.0e6;
 	inst->ctrl->sample_rate = 1e6;
-	inst->ctrl->n_channels = 1;
+	inst->ctrl->n_channels = n_channels;
 	inst->ctrl->head = 0;
 	inst->ctrl->magic = TimestampedSharedRingBuffer::Magic;
 	inst->version = inst->ctrl->version;
@@ -91,7 +90,6 @@ unique_ptr<TimestampedSharedRingBuffer> TimestampedSharedRingBuffer::create(cons
 
 	return instt;
 }
-
 
 unique_ptr<TimestampedSharedRingBuffer> TimestampedSharedRingBuffer::open(const string& name, boost::interprocess::mode_t mode) {
 
@@ -350,13 +348,24 @@ size_t TimestampedSharedRingBuffer::read(size_t maxElems, long long& timestamp) 
 	}
 #endif
 
+	// Move tail forward
 	tail = new_tail;
+
+	if (ctrl->mode == ManyToOne) {
+		// If used in many-to-one mode aka as tx buffer, notify writer
+		ctrl->cond_new_data.notify_all();
+	}
+
 	return samples_available;
 }
 
 
 void TimestampedSharedRingBuffer::write(size_t numItems, long long timestamp) {
 	assert(numItems == ctrl->block_size);
+
+	// Check write permissions
+	if (0) // ctrl->mode == )
+		throw runtime_error("Writing to buffer is not allowed in this mode");
 
 	boost::interprocess::scoped_lock<interprocess_mutex> lock(ctrl->header_mutex);
 
@@ -414,22 +423,23 @@ void TimestampedSharedRingBuffer::releaseWriteLock() {
 	ctrl->write_mutex.unlock();
 }
 
+bool TimestampedSharedRingBuffer::ownsWriteLock() {
+	return false;
+}
 
-void TimestampedSharedRingBuffer::wait(unsigned int timeoutUs) {
+void TimestampedSharedRingBuffer::wait_head(unsigned int timeoutUs) {
+	return wait_head(boost::get_system_time() + microseconds(timeoutUs));
+}
+
+void TimestampedSharedRingBuffer::wait_head(const boost::posix_time::ptime& abs_timeout) {
 	assert(ctrl != NULL);
-	ptime abs_timeout = boost::get_system_time() + microseconds(timeoutUs);
 	boost::interprocess::scoped_lock<interprocess_mutex> lock(ctrl->header_mutex);
 	if (tail == ctrl->head) // Empty?
 		ctrl->cond_new_data.timed_wait(lock, abs_timeout);
 }
 
-void TimestampedSharedRingBuffer::wait(const boost::posix_time::ptime& abs_timeout) {
-	assert(ctrl != NULL);
-	boost::interprocess::scoped_lock<interprocess_mutex> lock(ctrl->header_mutex);
-	if (tail == ctrl->head) // Empty?
-		ctrl->cond_new_data.timed_wait(lock, abs_timeout);
-}
-
+void TimestampedSharedRingBuffer::wait_tail(unsigned int timeoutUs) {}
+void TimestampedSharedRingBuffer::wait_tail(const boost::posix_time::ptime& abs_timeout) {}
 
 void TimestampedSharedRingBuffer::print(std::ostream& stream) const {
 	assert(ctrl != NULL);

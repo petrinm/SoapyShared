@@ -54,7 +54,7 @@ SoapyLeecher::SoapyLeecher(const SoapySDR::Kwargs &args):
 	if (TimestampedSharedRingBuffer::checkSHM(shm))
 		rx_buffer = TimestampedSharedRingBuffer::open(shm, boost::interprocess::read_write);
 	else
-		rx_buffer = SimpleSharedRingBuffer::open(shm, boost::interprocess::read_write);
+		rx_buffer = SimpleSharedRingBuffer::open(shm, SharedRingBuffer::BufferMode::OneToMany, boost::interprocess::read_only);
 
 #ifdef DEBUG
 	cerr << endl;
@@ -66,7 +66,7 @@ SoapyLeecher::SoapyLeecher(const SoapySDR::Kwargs &args):
 
 	// If TX with same name is found open it also
 	if (SimpleSharedRingBuffer::checkSHM(shm + "_tx")) {
-		tx_buffer = SimpleSharedRingBuffer::open(shm + "_tx", boost::interprocess::read_write);
+		tx_buffer = SimpleSharedRingBuffer::open(shm + "_tx", SharedRingBuffer::BufferMode::ManyToOne, boost::interprocess::read_write);
 
 #ifdef DEBUG
 		cerr << endl;
@@ -278,31 +278,28 @@ int SoapyLeecher::activateStream(SoapySDR::Stream *stream, const int flags, cons
 
 		if (tx_buffer.get() == nullptr)
 			return SOAPY_SDR_STREAM_ERROR;
-		//if (tx_buffer->getState() == SharedRingBuffer::Streaming)
-		//	return SOAPY_SDR_STREAM_ERROR;
-
+#ifdef LOCK_WHEN_ACTIVATED
 		// Wait for the TX buffer to became available
-		unsigned int timeout = 200;
-		while (timeout-- > 0) {
-			try {
-				if (tx_buffer->getState() != SimpleSharedRingBuffer::Ready)
-					tx_buffer->wait(1000);
-				tx_buffer->acquireWriteLock();
-				//tx_buffer->setState(SharedRingBuffer::Streaming);
-				break;
-			}
-			catch (boost::interprocess::interprocess_exception &ex) {
-				continue;
-			}
-		}
+		boost::posix_time::ptime abs_timeout = boost::get_system_time() + boost::posix_time::milliseconds(10);
+		while (tx_buffer->getState() != SharedRingBuffer::Ready)
+			tx_buffer->wait_tail(abs_timeout);
 
-		if (timeout == 0)
+		if (tx_buffer->getState() != SharedRingBuffer::Ready)
 			return SOAPY_SDR_TIMEOUT;
+
+		cerr << "writeStream: acquiring the write lock" << endl;
+		try {
+			tx_buffer->acquireWriteLock();
+		}
+		catch (boost::interprocess::interprocess_exception &ex) {
+			return SOAPY_SDR_TIMEOUT;
+		}
 
 		// Set configs
 		tx_buffer->setCenterFrequency(tx_frequency);
 		tx_buffer->setSampleRate(tx_sample_rate);
-
+		// tx_buffer->setState(SharedRingBuffer::Streaming);
+#endif
 		return 0;
 	}
 
@@ -321,16 +318,19 @@ int SoapyLeecher::deactivateStream(SoapySDR::Stream *stream, const int flags, co
 		if (tx_buffer.get() == nullptr)
 			return SOAPY_SDR_STREAM_ERROR;
 
-		if (tx_buffer->getState() == SharedRingBuffer::Streaming)
-			tx_buffer->setState(SharedRingBuffer::EndOfBurst);
+		if (tx_buffer->ownsWriteLock() == false)
+		{
+			if (tx_buffer->getState() == SharedRingBuffer::Streaming)
+				tx_buffer->setState(SharedRingBuffer::EndOfBurst);
 
-		// Release the write lock
-		tx_buffer->releaseWriteLock();
+			cerr << "writeStream: releasing the write lock" << endl;
+			// Release the write lock
+			tx_buffer->releaseWriteLock();
+		}
 	}
 
 	return 0;
 }
-
 
 int SoapyLeecher::resampledReadStream(SoapySDR::Stream *stream, void *const *buffs, const size_t numElems, int &flags, long long &timeNs, const long timeoutUs) {
 	(void) flags; (void) timeNs;
@@ -413,7 +413,7 @@ int SoapyLeecher::resampledReadStream(SoapySDR::Stream *stream, void *const *buf
 		// Wait for new data and check the timeout condition
 		try {
 			if (new_samples < numElems)
-				rx_buffer->wait(abs_timeout);
+				rx_buffer->wait_head(abs_timeout);
 		}
 		catch (boost::interprocess::interprocess_exception &ex) {
 			return (new_samples != 0) ? new_samples : SOAPY_SDR_TIMEOUT;
@@ -502,7 +502,7 @@ int SoapyLeecher::readStream(SoapySDR::Stream *stream, void *const *buffs, const
 			// Wait for new data and check the timeout condition
 			try {
 				if (new_samples < numElems)
-					rx_buffer->wait(abs_timeout);
+					rx_buffer->wait_head(abs_timeout);
 			}
 			catch (boost::interprocess::interprocess_exception &ex) {
 				return (new_samples != 0) ? new_samples : SOAPY_SDR_TIMEOUT;
@@ -523,7 +523,6 @@ int SoapyLeecher::readStream(SoapySDR::Stream *stream, void *const *buffs, const
 
 int SoapyLeecher::writeStream(SoapySDR::Stream *stream, const void *const *buffs, const size_t numElems, int &flags, const long long timeNs, const long timeoutUs) {
 	(void) flags; (void) timeNs;
-	//TRACE_API_CALLS()
 	cerr << "writeStream(" << numElems << ")" << endl;
 
 	if (stream == TX_STREAM) {
@@ -531,16 +530,64 @@ int SoapyLeecher::writeStream(SoapySDR::Stream *stream, const void *const *buffs
 		if (tx_buffer.get() == nullptr)
 			return SOAPY_SDR_STREAM_ERROR;
 
-		//cerr << "getState() " << tx_buffer->getState() << endl;
-		//if (tx_buffer->getState() == SharedRingBuffer::Streaming)
-		//	return SOAPY_SDR_UNDERFLOW;
-
-		// Wait for enough space becomes available in the ring buffer
 		boost::posix_time::ptime abs_timeout = boost::get_system_time() + boost::posix_time::microseconds(timeoutUs);
+
+#ifdef LOCK_WHEN_ACTIVATED
+		// 
+		if (tx_buffer->ownsWriteLock() == false)
+		{
+			cerr << "writeStream: TX stream has not been activated!" << endl;
+			return SOAPY_SDR_STREAM_ERROR;
+		}
+#else
+		// If we don't have tx write lock try to acquire it
+		if (tx_buffer->ownsWriteLock() == false) {
+
+			// Wait for the TX buffer to became available
+			while (tx_buffer->getState() != SharedRingBuffer::Ready) {
+				cerr << "writeStream: Buffer is busy" << endl;
+				tx_buffer->wait_tail(abs_timeout);
+				if (boost::get_system_time() > abs_timeout) {
+					cout << "timeout" << endl;
+					return SOAPY_SDR_TIMEOUT;
+				}
+			}
+
+			if (tx_buffer->getState() != SharedRingBuffer::Ready)
+				return SOAPY_SDR_TIMEOUT;
+
+			cerr << "writeStream: acquiring the write lock" << endl;
+			try {
+				tx_buffer->acquireWriteLock();
+			}
+			catch (boost::interprocess::interprocess_exception &ex) {
+				return SOAPY_SDR_TIMEOUT;
+			}
+
+			// Reset the buffer state for our use.
+			tx_buffer->reset();
+			tx_buffer->setCenterFrequency(tx_frequency);
+			tx_buffer->setSampleRate(tx_sample_rate);
+			tx_buffer->setState(SharedRingBuffer::Streaming);
+		}
+#endif
+
+		// If the buffer is not anymore in streaming mode, an error has occurred in the other end!
+		if (tx_buffer->getState() != SharedRingBuffer::Streaming) {
+			cerr << "writeStream: Buffer state out of sync!" << endl;
+			return SOAPY_SDR_UNDERFLOW;
+		}
+
+		// TODO: if (numElems > tx_buffer->buffer_size / 2);
+		unsigned int x = tx_buffer->getSamplesLeft();
+		cout << "samples left " << x << " " << numElems  << endl;
+		// Wait for enough space becomes available in the ring buffer
 		try {
 			while (tx_buffer->getSamplesLeft() < numElems) { // TODO: Fails if the looping is not supported
-				cerr << "tx_buffer->wait " << endl;
-				tx_buffer->wait(abs_timeout);
+				tx_buffer->wait_tail(abs_timeout);
+
+				if (boost::get_system_time() > abs_timeout)
+					return SOAPY_SDR_TIMEOUT;
 			}
 		}
 		catch (boost::interprocess::interprocess_exception &ex) {
@@ -557,34 +604,26 @@ int SoapyLeecher::writeStream(SoapySDR::Stream *stream, const void *const *buffs
 		for (size_t ch = 0; ch < n_channels; ch++)
 			memcpy(shm_buffs[ch], buffs[ch], samples_written * tx_buffer->getDatasize());
 
+
+		if (flags & SOAPY_SDR_END_BURST)
+			tx_buffer->setState(SharedRingBuffer::EndOfBurst);
 		tx_buffer->write(samples_written, timeNs);
 
 
 #ifndef LOCK_WHEN_ACTIVATED
-		for (size_t ch = 0; ch < n_channels; ch++)
-			host_buffs[ch] = buffs[ch];
-
-		// TODO: Allow partial writes?
-		size_t samples_written = min(tx_buffer->getSamplesLeft(), numElems);
-		for (size_t ch = 0; ch < n_channels; ch++) {
-			memcpy(shm_buffs[ch], host_buffs[ch], samples_written * tx_buffer->getDatasize());
-			host_buffs[ch] = static_cast<void*>(static_cast<size_t>(buffs[ch]) + samples_written * tx_buffer->getDatasize());
-		}
-
-		tx_buffer->write(samples_written, timeNs);
-
-		// Second write needed?
-		if (samples_written < numElems) {
-			tx_buffer->getWritePointers(shm_buffs);
-			samples_written = min(tx_buffer->getSamplesLeft(), numElems - samples_written);
-			for (size_t ch = 0; ch < n_channels; ch++)
-				memcpy(shm_buffs[ch], host_buffs[ch], samples_written * tx_buffer->getDatasize());
-			tx_buffer->write(samples_written, timeNs);
-		}
+		if (flags & SOAPY_SDR_END_BURST) {
+			cerr << "writeStream: releasing the write lock" << endl;
+			tx_buffer->releaseWriteLock();
 #endif
+#if 0
+			// Wait the end of the transmission
+			while (tx_buffer->getState() == SharedRingBuffer::Ready)
+				tx_buffer->wait(abs_timeout);
 
-		if (flags & SOAPY_SDR_END_BURST)
-			tx_buffer->setState(SharedRingBuffer::EndOfBurst);
+			if (tx_buffer->getState() != SharedRingBuffer::Ready)
+				return SOAPY_SDR_TIMEOUT;
+#endif
+		}
 
 		return samples_written;
 
@@ -595,10 +634,31 @@ int SoapyLeecher::writeStream(SoapySDR::Stream *stream, const void *const *buffs
 
 int SoapyLeecher::readStreamStatus(SoapySDR::Stream *stream, size_t &chanMask, int &flags, long long &timeNs, const long timeoutUs) {
 	TRACE_API_CALLS("readStreamStatus(" << (stream == RX_STREAM ? "RX": "TX") << endl);
+	boost::posix_time::ptime abs_timeout = boost::get_system_time() + boost::posix_time::microseconds(timeoutUs);
 
-	if (stream == RX_STREAM) { }
-	else if (stream == TX_STREAM) { }
-	return SOAPY_SDR_NOT_SUPPORTED;
+	if (stream == RX_STREAM) {
+		while (1) {
+			if (abs_timeout < boost::get_system_time())
+				return SOAPY_SDR_TIMEOUT;
+
+			// TODO
+			tx_buffer->wait_head(abs_timeout);
+		}
+		return 0;
+	}
+	else if (stream == TX_STREAM) {
+		while (1) {
+			if (abs_timeout < boost::get_system_time())
+				return SOAPY_SDR_TIMEOUT;
+
+			// TODO
+			tx_buffer->wait_tail(abs_timeout);
+		}
+		if (tx_buffer->getState() != SharedRingBuffer::Ready)
+			flags |= 1;
+		return 0;
+	}
+	return SOAPY_SDR_STREAM_ERROR;
 }
 
 std::vector<std::string> SoapyLeecher::listAntennas(const int direction, const size_t channel) const {

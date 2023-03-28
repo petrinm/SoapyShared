@@ -30,11 +30,12 @@ class SimpleSharedRingBuffer: public SharedRingBuffer
 			 */
 			uint32_t magic;
 			char label[32];                 // Text label for the device
+			enum BufferMode mode;
 
 			/*
 			 * For the ring buffer
 			 */
-			size_t head;                     // Ring buffer position on the stream
+			size_t head;					 // Ring buffer position on the stream
 			size_t tail;                     // Current 
 			enum BufferState state;
 			size_t n_channels;
@@ -49,13 +50,15 @@ class SimpleSharedRingBuffer: public SharedRingBuffer
 
 
 			boost::interprocess::interprocess_mutex write_mutex;
-
 			boost::interprocess::interprocess_mutex header_mutex;
-			boost::interprocess::interprocess_condition cond_new_data;
+			boost::interprocess::interprocess_condition cond_head;
+			boost::interprocess::interprocess_condition cond_tail;
 		};
 
 
 		static const uint32_t Magic = 0x50B982;
+		static const uint32_t MagicOneToMany = 0x50B983;
+		static const uint32_t MagicManyToOne = 0x50B984;
 
 		/*
 		 * Check doest shared memory buffer exist?
@@ -65,13 +68,12 @@ class SimpleSharedRingBuffer: public SharedRingBuffer
 		/*
 		 * Create a new shared memory buffer
 		 */
-		static std::unique_ptr<SimpleSharedRingBuffer> create(const std::string& name, boost::interprocess::mode_t mode, std::string format=std::string(), size_t buffer_size=0);
+		static std::unique_ptr<SimpleSharedRingBuffer> create(const std::string &name, enum BufferMode mode, boost::interprocess::mode_t access_mode, std::string format = std::string(), size_t buffer_size = 0, size_t n_channels=1);
 
 		/*
 		 * Open a shared memory buffer
 		 */
-		static std::unique_ptr<SimpleSharedRingBuffer> open(const std::string& name, boost::interprocess::mode_t mode);
-
+		static std::unique_ptr<SimpleSharedRingBuffer> open(const std::string &name, enum BufferMode mode, boost::interprocess::mode_t access_mode);
 
 		/*
 		 * Destructor!
@@ -93,9 +95,9 @@ class SimpleSharedRingBuffer: public SharedRingBuffer
 		void reset();
 
 		/*
-		 * Get number of available new samples till end pointer or end of the buffer
+		 * Get number of available new samples for reading out.
 		 */
-		size_t getSamplesAvailable();
+		size_t getSamplesAvailable(); // TODO: getReadSamples(), getNewSamples()?
 
 		/*
 		 * Is the ring buffer empty?
@@ -105,27 +107,25 @@ class SimpleSharedRingBuffer: public SharedRingBuffer
 		/*
 		 * Get number of samples that can be written to TX position
 		 */
-		size_t getSamplesLeft();
+		size_t getSamplesLeft(); // TODO: getWriteSamples(), getFreeSpace()?
 
 
 		void* getWritePointer() {
-			return reinterpret_cast<void*>(reinterpret_cast<size_t>(buffer) + datasize * ctrl->head);
-		}
-
-		void* getReadPointer() {
-			return reinterpret_cast<void*>(reinterpret_cast<size_t>(buffer) + datasize * tail);
+			return reinterpret_cast<void *>(reinterpret_cast<size_t>(buffers[0]) + datasize * ctrl->head);
 		}
 
 		void getWritePointers(void* ptrs[]) {
-			//assert(sizeof(T) && sizeof(T) == datasize);
-			// for (size_t ch = 0; ch < ctrl->channels; ch++)
-			ptrs[0] = reinterpret_cast<void*>(reinterpret_cast<size_t>(buffer) + datasize * ctrl->head);
+			for (size_t ch = 0; ch < ctrl->n_channels; ch++)
+				ptrs[ch] = reinterpret_cast<void *>(reinterpret_cast<size_t>(buffers[ch]) + datasize * ctrl->head);
 		}
 
+		void *getReadPointer() {
+			return reinterpret_cast<void *>(reinterpret_cast<size_t>(buffers[0]) + datasize * tail);
+		}
 
 		void getReadPointers(void* ptrs[]) {
-			//assert(sizeof(T) && sizeof(T) == datasize);
-			ptrs[0] = reinterpret_cast<void*>(reinterpret_cast<size_t>(buffer) + datasize * tail);
+			for (size_t ch = 0; ch < ctrl->n_channels; ch++)
+				ptrs[ch] = reinterpret_cast<void *>(reinterpret_cast<size_t>(buffers[ch]) + datasize * tail);
 		}
 #if 0
 
@@ -168,13 +168,11 @@ class SimpleSharedRingBuffer: public SharedRingBuffer
 		 * takes
 		 */
 		size_t read(size_t maxElems, long long& timestamp);
-		size_t read(void* buff, size_t maxElems, long long& timestamp);
 
 		/*
 		 * Write items to buffer and move the end pointer torwards
 		 */
 		void write(size_t numItems, long long timestamp);
-		void write(void* buff, size_t numElems, long long timestamp);
 
 		/*
 		 * Get format string
@@ -240,10 +238,13 @@ class SimpleSharedRingBuffer: public SharedRingBuffer
 		 */
 		void releaseWriteLock();
 
+		bool ownsWriteLock();
+
 		/*
-		 * Returns the global write mutex for the buffer
-		 */
-		boost::interprocess::interprocess_mutex& write_mutex() {
+			* Returns the global write mutex for the buffer
+			*/
+		boost::interprocess::interprocess_mutex &write_mutex()
+		{
 			assert(ctrl != NULL);
 			return ctrl->write_mutex;
 		}
@@ -251,8 +252,11 @@ class SimpleSharedRingBuffer: public SharedRingBuffer
 		/*
 		 * Wait for new data
 		 */
-		void wait(unsigned int timeoutUs);
-		void wait(const boost::posix_time::ptime& abs_timeout);
+		void wait_tail(unsigned int timeoutUs);
+		void wait_tail(const boost::posix_time::ptime& abs_timeout);
+
+		void wait_head(unsigned int timeoutUs);
+		void wait_head(const boost::posix_time::ptime &abs_timeout);
 
 		/*
 		 * Stream opetator to print the buffer description
@@ -283,13 +287,14 @@ class SimpleSharedRingBuffer: public SharedRingBuffer
 
 	public:
 		BufferControl* ctrl;
-		void* buffer;
+		std::vector<void *> buffers;
 
 		size_t tail;
 		size_t version;
 		bool owner;
+		bool owns_write_lock;
 
-		friend void* transmitter_thread(void* p);
+		friend void *transmitter_thread(void *p);
 };
 
 

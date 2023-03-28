@@ -66,7 +66,7 @@ public:
 		/*
 		 * Open shared memory buffer.
 		 */
-		std::unique_ptr<SimpleSharedRingBuffer> shm_buffer = SimpleSharedRingBuffer::open(shm_name, boost::interprocess::read_write);
+		std::unique_ptr<SimpleSharedRingBuffer> shm_buffer = SimpleSharedRingBuffer::open(shm_name, SharedRingBuffer::BufferMode::ManyToOne, boost::interprocess::read_write);
 		CPPUNIT_ASSERT(shm_buffer->getNumChannels() == 1);
 		CPPUNIT_ASSERT(shm_buffer->getFormat() == SOAPY_SDR_CF32);
 		CPPUNIT_ASSERT(shm_buffer->isEmpty() == true);

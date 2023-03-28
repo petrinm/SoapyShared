@@ -141,6 +141,7 @@ void SoapySeeder::spawnTxThread() {
 
 
 SoapySeeder::~SoapySeeder() {
+
 	// Terminate TX thread
 	if (tx_thread.get() != nullptr) {
 		tx_info->shutdown = true;
@@ -164,19 +165,23 @@ std::vector<std::string> SoapySeeder::getStreamFormats(const int direction, cons
 	return slave->getStreamFormats(direction, channel);
 }
 
-SoapySDR::Stream* SoapySeeder::setupStream (const int direction, const std::string &format,
+SoapySDR::Stream* SoapySeeder::setupStream(const int direction, const std::string &format,
 	const std::vector<size_t> &channels, const SoapySDR::Kwargs &args)
 {
 	TRACE_API_CALLS("setupStream(" << ", " << format << ")" << endl);
 
 	if (direction == SOAPY_SDR_RX) {
+		size_t n_channels = (channels.size() != 0 ? channels.size() : 1);
 
 		// Create SHM
-		if (timestamped) {
-			rx_buffer = TimestampedSharedRingBuffer::create(shm, boost::interprocess::read_write, format, n_blocks, block_size);
+		if (timestamped)
+		{
+			rx_buffer = TimestampedSharedRingBuffer::create(shm, boost::interprocess::read_write,
+				format, n_blocks, block_size, n_channels);
 		}
 		else {
-			rx_buffer = SimpleSharedRingBuffer::create(shm, boost::interprocess::read_write, format, n_blocks * block_size);
+			rx_buffer = SimpleSharedRingBuffer::create(shm, SharedRingBuffer::BufferMode::ManyToOne,
+				boost::interprocess::read_write, format, n_blocks * block_size, n_channels);
 		}
 
 		rx_buffer->reset();
@@ -297,6 +302,7 @@ int SoapySeeder::simpleReadStream(SoapySDR::Stream *stream, void *const *buffs, 
 	}
 
 	const unsigned n_channels = rx_buffer->getNumChannels();
+	boost::posix_time::ptime abs_timeout = boost::get_system_time() + boost::posix_time::microseconds(timeoutUs);
 
 	int read_samples = 0;
 	unsigned int total_read_samples = 0;
@@ -313,11 +319,10 @@ int SoapySeeder::simpleReadStream(SoapySDR::Stream *stream, void *const *buffs, 
 		rx_buffer->getWritePointers(shm_buffs);
 
 		// Read the real stream
-		{
-			boost::mutex::scoped_lock lock(hw_mutex);
-			if ((read_samples = slave->readStream(stream, shm_buffs, readElems, flags, timeNs, timeoutUs)) <= 0) // TODO: Calculate remaining timeout time correctly
-				return read_samples;
-		}
+		// Remark: hw_mutex is not used with streams.
+		const long timeout_left = (abs_timeout - boost::get_system_time()).total_microseconds();
+		if ((read_samples = slave->readStream(stream, shm_buffs, readElems, flags, timeNs, timeout_left)) <= 0)
+			return read_samples;
 
 #ifdef SUPPORT_SOAPY_CONVERTERS
 		if (converter != NULL) {
@@ -367,10 +372,14 @@ int SoapySeeder::timestampedReadStream(SoapySDR::Stream *stream, void *const *bu
 		assert(numElems > 0);
 	}
 
+	flags = 0;
+	boost::posix_time::ptime abs_timeout = boost::get_system_time() + boost::posix_time::microseconds(timeoutUs);
+
 	int read_samples;
 	unsigned total_read_samples = 0;
 	const size_t block_size = rx_buffer->getCtrl().block_size;
 	const unsigned n_channels = rx_buffer->getNumChannels();
+
 
 	// Copy host apps buffer
 	void* host_buffs[n_channels];
@@ -382,13 +391,11 @@ int SoapySeeder::timestampedReadStream(SoapySDR::Stream *stream, void *const *bu
 		// Get SHM write pointers
 		void* shmbuffs[n_channels];
 		rx_buffer->getWritePointers(shmbuffs);
-
+	
 		// Read the real stream in block size pieces to SHM
-		{
-			boost::mutex::scoped_lock lock(hw_mutex);
-			if ((read_samples = slave->readStream(stream, shmbuffs, block_size, flags, timeNs, 100 * timeoutUs)) <= 0) // TODO: Calculate remaining timeout time correctly
-				return read_samples;
-		}
+		const long timeout_left = (abs_timeout - boost::get_system_time()).total_microseconds();
+		if ((read_samples = slave->readStream(stream, shmbuffs, block_size, flags, timeNs, timeoutUs)) <= 0) // TODO: Calculate remaining timeout time correctly
+			return read_samples;
 
 		if (read_samples != (int)block_size) {
 			cout << "read_samples " << numElems << "  " << read_samples << " " << block_size << endl;

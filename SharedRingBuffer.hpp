@@ -16,7 +16,13 @@ public:
 	enum BufferState {
 		Ready = 0,
 		Streaming,
-		EndOfBurst,
+		EndOfBurst, 
+	};
+
+
+	enum BufferMode {
+		OneToMany = 0,
+		ManyToOne
 	};
 
 
@@ -58,9 +64,13 @@ public:
 
 	virtual void acquireWriteLock(unsigned int timeoutUs = 0) = 0;
 	virtual void releaseWriteLock() = 0;
+	virtual bool ownsWriteLock() = 0;
 
-	virtual void wait(unsigned int timeoutUs) = 0;
-	virtual void wait(const boost::posix_time::ptime& abs_timeout) = 0;
+	virtual void wait_head(unsigned int timeoutUs) = 0;
+	virtual void wait_head(const boost::posix_time::ptime& abs_timeout) = 0;
+
+	virtual void wait_tail(unsigned int timeoutUs) = 0;
+	virtual void wait_tail(const boost::posix_time::ptime &abs_timeout) = 0;
 
 	virtual bool isEmpty() const = 0;
 

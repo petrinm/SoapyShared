@@ -63,6 +63,8 @@ class TimestampedSharedRingBuffer: public SharedRingBuffer
 			uint32_t magic;
 			char label[32];                 // Text label for the device
 
+			enum BufferMode mode;
+
 			/*
 			 * For the ring buffer
 			 */
@@ -102,6 +104,8 @@ class TimestampedSharedRingBuffer: public SharedRingBuffer
 		typedef uint64_t Timestamp;
 
 		static const uint32_t Magic = 0x50A971;
+		static const uint32_t MagicOneToMany = 0x50A972;
+		static const uint32_t MagicManyToOne = 0x50A973;
 
 		/*
 		 * Check doest shared memory buffer exist?
@@ -111,7 +115,7 @@ class TimestampedSharedRingBuffer: public SharedRingBuffer
 		/*
 		 * Create a new shared memory buffer
 		 */
-		static std::unique_ptr<TimestampedSharedRingBuffer> create(const std::string& name, boost::interprocess::mode_t mode, std::string format=std::string(), size_t n_blocks=0, size_t block_size=0);
+		static std::unique_ptr<TimestampedSharedRingBuffer> create(const std::string& name, boost::interprocess::mode_t mode, std::string format=std::string(), size_t n_blocks=0, size_t block_size=0, size_t n_channels=1);
 
 		/*
 		 * Open a shared memory buffer
@@ -257,7 +261,6 @@ class TimestampedSharedRingBuffer: public SharedRingBuffer
 		 * Return the number of channels
 		 */
 		size_t getNumChannels() const {
-			return 1; // TODO: Assert fails because the function is called before the stream is opened!
 			assert(ctrl != NULL);
 			return ctrl->n_channels;
 		}
@@ -273,7 +276,11 @@ class TimestampedSharedRingBuffer: public SharedRingBuffer
 		 * Throws an `boost::interprocess::interprocess_exception` in case of failure.
 		 */
 		void releaseWriteLock();
-
+		
+		/*
+		 */
+		bool ownsWriteLock();
+		
 		/*
 		 *
 		 */
@@ -285,8 +292,11 @@ class TimestampedSharedRingBuffer: public SharedRingBuffer
 		/*
 		 * Wait for new data
 		 */
-		void wait(unsigned int timeoutUs);
-		void wait(const boost::posix_time::ptime& abs_timeout);
+		void wait_head(unsigned int timeoutUs);
+		void wait_head(const boost::posix_time::ptime& abs_timeout);
+
+		void wait_tail(unsigned int timeoutUs);
+		void wait_tail(const boost::posix_time::ptime& abs_timeout);
 
 		/*
 		 * Stream opetator to print the buffer description
