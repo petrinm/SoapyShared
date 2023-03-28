@@ -1,5 +1,0 @@
-- Frequency conversion works only with CF32!
-- Fix decimation, sample rates, bandwidths
-- Transmitting from Leecher device
-- Better driver naming??
-- SHM is not deleted properly
