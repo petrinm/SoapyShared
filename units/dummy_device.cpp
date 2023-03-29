@@ -1,4 +1,4 @@
-#include "utils.hpp"
+#include "test_utils.hpp"
 #include "dummy_device.hpp"
 
 static SoapySDR::Stream* const TX_STREAM = (SoapySDR::Stream*) 0x81;
@@ -80,41 +80,48 @@ int DummyDevice::readStream(SoapySDR::Stream *stream, void *const *buffs, const 
 }
 
 
-int DummyDevice::writeStream(SoapySDR::Stream *stream, const void *const *buffs, const size_t numElems, int &flags, const long long timeNs, const long timeoutUs) {
+int DummyDevice::writeStream(SoapySDR::Stream *stream, const void *const *buffs, const size_t numElems, int &flags, const long long timeNs, const long timeoutUs)
+{
 	return numElems;
 }
 
-
-
-void DummyDevice::setFrequency(const int direction, const size_t channel, const double frequency, const SoapySDR::Kwargs &args) {
+void DummyDevice::setFrequency(const int direction, const size_t channel, const double frequency, const SoapySDR::Kwargs &args)
+{
 	mFrequency = frequency;
 }
 
-double DummyDevice::getFrequency(const int direction, const size_t channel) const {
+double DummyDevice::getFrequency(const int direction, const size_t channel) const
+{
 	return mFrequency;
 }
-
-void DummyDevice::setSampleRate(const int direction, const size_t channel, const double rate) {
+	
+void DummyDevice::setSampleRate(const int direction, const size_t channel, const double rate)
+{
 	mSampleRate = rate;
 }
 
-double DummyDevice::getSampleRate(const int direction, const size_t channel) const {
+double DummyDevice::getSampleRate(const int direction, const size_t channel) const
+{
 	return mSampleRate;
 }
 
-int DummyDevice::acquireReadBuffer(SoapySDR::Stream *stream, size_t &handle, const void **buffs, int &flags, long long &timeNs, const long timeoutUs) {
+int DummyDevice::acquireReadBuffer(SoapySDR::Stream *stream, size_t &handle, const void **buffs, int &flags, long long &timeNs, const long timeoutUs)
+{
 	return 0;
 }
 
-void DummyDevice::releaseReadBuffer(SoapySDR::Stream *stream, const size_t handle) {
+void DummyDevice::releaseReadBuffer(SoapySDR::Stream *stream, const size_t handle)
+{
 	//delete;
 }
 
-int DummyDevice::acquireWriteBuffer(SoapySDR::Stream *stream, size_t &handle, void **buffs, const long timeoutUs) {
+int DummyDevice::acquireWriteBuffer(SoapySDR::Stream *stream, size_t &handle, void **buffs, const long timeoutUs)
+{
 	return 0;
 }
 
-void DummyDevice::releaseWriteBuffer(SoapySDR::Stream *stream, const size_t handle, const size_t numElems, int &flags, const long long timeNs) {
+void DummyDevice::releaseWriteBuffer(SoapySDR::Stream *stream, const size_t handle, const size_t numElems, int &flags, const long long timeNs)
+{
 	//delete;
 }
 

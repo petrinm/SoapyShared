@@ -1,5 +1,4 @@
 
-
 #include <iostream>
 #include <memory>
 #include <cassert>
@@ -8,10 +7,11 @@
 #include "SoapySDR/Device.hpp"
 #include "SoapySDR/Formats.hpp"
 
-#include "utils.hpp"
-
+#include "Utils.hpp"
 #include "SimpleSharedRingBuffer.hpp"
 #include "TimestampedSharedRingBuffer.hpp"
+
+#include "test_utils.hpp"
 
 #include <cppunit/extensions/HelperMacros.h>
 

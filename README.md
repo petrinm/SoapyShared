@@ -23,7 +23,6 @@ Dependencies to be installed with your favorite package manager
 - `libliquid-dev`
 - `libboost-system-dev`
 - `libboost-thread-dev`
-- `libboost-filesystem-dev`
 
 Just like any other C++ software nowadays:
 ```

@@ -8,8 +8,10 @@
 #include "SoapySDR/Device.hpp"
 #include "SoapySDR/Formats.hpp"
 
-#include "utils.hpp"
+#include "Utils.hpp"
 #include "SimpleSharedRingBuffer.hpp"
+
+#include "test_utils.hpp"
 
 #include <cppunit/extensions/HelperMacros.h>
 

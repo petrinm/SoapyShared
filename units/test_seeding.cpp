@@ -8,8 +8,10 @@
 #include "SoapySDR/Device.hpp"
 #include "SoapySDR/Formats.hpp"
 
-#include "utils.hpp"
+#include "Utils.hpp"
 #include "SimpleSharedRingBuffer.hpp"
+
+#include "test_utils.hpp"
 
 #include <cppunit/extensions/HelperMacros.h>
 
@@ -59,7 +61,7 @@ public:
 		/*
 		 * Check that the new SHM buffer can be found.
 		 */
-		std::vector<std::string> shms = listSHMs();
+		std::vector<std::string> shms = SHMRegistry::list();
 		assert(find(shms.begin(), shms.end(), shm_name) != shms.end());
 
 

@@ -11,7 +11,6 @@
 //typedef float _Complex cf32;
 typedef std::complex<float>  cf32;
 
-std::vector<std::string> listSHMs();
 
 
 #include <cppunit/CompilerOutputter.h>
