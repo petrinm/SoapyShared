@@ -356,6 +356,10 @@ int SoapyLeecher::resampledReadStream(SoapySDR::Stream *stream, void *const *buf
 
 		// How much new data is available?
 		rx_buffer->getReadPointers(shm_buffs);
+
+		// Store tail position before reading (for timestamp lookup)
+		size_t data_tail_before = rx_buffer->tail;
+
 		size_t samples_available = rx_buffer->read(wanted_samples, timestamp);
 
 #ifdef DEBUG_RESAMPLING
@@ -467,6 +471,10 @@ int SoapyLeecher::readStream(SoapySDR::Stream *stream, void *const *buffs, const
 
 			// How much new data is available?
 			rx_buffer->getReadPointers(shm_buffs);
+
+			// Store tail position before reading (for timestamp lookup)
+			size_t data_tail_before = rx_buffer->tail;
+
 			size_t samples_available = rx_buffer->read(wanted_samples, timestamp);
 #ifdef DEBUG
 			cerr << "# " <<  samples_available << endl;
@@ -476,7 +484,6 @@ int SoapyLeecher::readStream(SoapySDR::Stream *stream, void *const *buffs, const
 			wanted_samples -= samples_available;
 
 			if (samples_available > 0) {
-
 				if (0) { // && (flags & SOAPY_SDR_HAS_TIME) == 0 // Only on the first read
 					flags |= SOAPY_SDR_HAS_TIME;
 					timeNs = timestamp;
