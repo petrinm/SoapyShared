@@ -45,7 +45,13 @@ message(STATUS "SoapySDR include directories: ${SoapySDR_INCLUDE_DIRS}")
 ########################################################################
 # Setup boost
 ########################################################################
-find_package(Boost 1.36.0 REQUIRED COMPONENTS system thread)
+# Use the new BoostConfig.cmake (default for Boost 1.89.0)
+# Note: system component may not be needed or available as separate package
+# Suppress warning about FindBoost module being deprecated
+if(POLICY CMP0167)
+    cmake_policy(SET CMP0167 NEW)
+endif()
+find_package(Boost 1.36.0 REQUIRED COMPONENTS thread)
 include_directories(${Boost_INCLUDE_DIRS})
 SET(SoapyShared_LIBRARIES ${SoapyShared_LIBRARIES} ${Boost_LIBRARIES})
 ADD_DEFINITIONS(-DBOOST_ALL_DYN_LINK)
@@ -70,7 +76,7 @@ message(STATUS "Liquid-DSP libraries: ${Liquid_LIBRARIES}")
 ########################################################################
 SOAPY_SDR_MODULE_UTIL(
     TARGET SoapyShared
-    SOURCES SoapySeeder.cpp SoapyLeecher.cpp SimpleSharedRingBuffer.cpp TimestampedSharedRingBuffer.cpp AutoTx.cpp Utils.cpp
+    SOURCES SoapySeeder.cpp SoapyLeecher.cpp SharedRingBuffer.cpp AutoTx.cpp Utils.cpp
     LIBRARIES ${SoapyShared_LIBRARIES}
 )
 
