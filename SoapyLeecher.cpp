@@ -14,8 +14,6 @@
 #include <liquid/liquid.h>
 
 #include "SharedRingBuffer.hpp"
-#include "SimpleSharedRingBuffer.hpp"
-#include "TimestampedSharedRingBuffer.hpp"
 
 #include "SoapyLeecher.hpp"
 #include "Utils.hpp"
@@ -51,10 +49,7 @@ SoapyLeecher::SoapyLeecher(const SoapySDR::Kwargs &args):
 
 	// Open shared memory buffer
 	// TODO: R&W right required for some reason..
-	if (TimestampedSharedRingBuffer::checkSHM(shm))
-		rx_buffer = TimestampedSharedRingBuffer::open(shm, boost::interprocess::read_write);
-	else
-		rx_buffer = SimpleSharedRingBuffer::open(shm, SharedRingBuffer::BufferMode::OneToMany, boost::interprocess::read_only);
+	rx_buffer = SharedRingBuffer::open(shm, SharedRingBuffer::BufferMode::OneToMany, boost::interprocess::read_only);
 
 #ifdef DEBUG
 	cerr << endl;
@@ -65,8 +60,8 @@ SoapyLeecher::SoapyLeecher(const SoapySDR::Kwargs &args):
 #endif
 
 	// If TX with same name is found open it also
-	if (SimpleSharedRingBuffer::checkSHM(shm + "_tx")) {
-		tx_buffer = SimpleSharedRingBuffer::open(shm + "_tx", SharedRingBuffer::BufferMode::ManyToOne, boost::interprocess::read_write);
+	if (SharedRingBuffer::checkSHM(shm + "_tx")) {
+		tx_buffer = SharedRingBuffer::open(shm + "_tx", SharedRingBuffer::BufferMode::ManyToOne, boost::interprocess::read_write);
 
 #ifdef DEBUG
 		cerr << endl;
@@ -533,7 +528,7 @@ int SoapyLeecher::writeStream(SoapySDR::Stream *stream, const void *const *buffs
 		boost::posix_time::ptime abs_timeout = boost::get_system_time() + boost::posix_time::microseconds(timeoutUs);
 
 #ifdef LOCK_WHEN_ACTIVATED
-		// 
+		//
 		if (tx_buffer->ownsWriteLock() == false)
 		{
 			cerr << "writeStream: TX stream has not been activated!" << endl;
@@ -832,19 +827,10 @@ SoapySDR::KwargsList findLeecher(const SoapySDR::Kwargs &args)
 			continue;
 
 		// Try to open the Shared Memory buffer to get details
-		if (SimpleSharedRingBuffer::checkSHM(shm_name) == true) {
+		if (SharedRingBuffer::checkSHM(shm_name) == true) {
 
 			SoapySDR::Kwargs resultArgs;
 			resultArgs["shm"] = shm_name;
-			resultArgs["label"] = "SoapyLeecher: " + shm_name; // Readable label for the Leetcher driver
-
-			results.push_back(resultArgs);
-		}
-		else if (TimestampedSharedRingBuffer::checkSHM(shm_name) == true) {
-
-			SoapySDR::Kwargs resultArgs;
-			resultArgs["shm"] = shm_name;
-			resultArgs["timestamped"] = "true";
 			resultArgs["label"] = "SoapyLeecher: " + shm_name; // Readable label for the Leetcher driver
 
 			results.push_back(resultArgs);

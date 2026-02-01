@@ -15,7 +15,7 @@
 #include <SoapySDR/Registry.hpp>
 
 #include "AutoTx.hpp"
-#include "SimpleSharedRingBuffer.hpp"
+#include "SharedRingBuffer.hpp"
 
 
 using namespace std;
@@ -38,7 +38,7 @@ void transmitter_thread(std::shared_ptr<TransmitThreadDescription> info) {
 	boost::mutex& hw_mutex = *info->hw_mutex;
 	std::vector<size_t> channels; // TODO
 
-	unique_ptr<SharedRingBuffer> tx_buffer = SimpleSharedRingBuffer::create(info->shm,
+	unique_ptr<SharedRingBuffer> tx_buffer = SharedRingBuffer::create(info->shm,
 		SharedRingBuffer::BufferMode::ManyToOne, boost::interprocess::read_write,
 		info->format, info->buffer_size, n_channels);
 
@@ -75,7 +75,7 @@ void transmitter_thread(std::shared_ptr<TransmitThreadDescription> info) {
 
 	while (info->shutdown == false)
 	{
-		
+
 		// Update transmission settings
 		if (tx_buffer->settingsChanged() && tx_active == false) {
 			TX_DEBUG("New TX settings!" << endl);
@@ -101,7 +101,7 @@ void transmitter_thread(std::shared_ptr<TransmitThreadDescription> info) {
 				limited = true;
 			}
 
-			// Activate TX stream if already active 
+			// Activate TX stream if already active
 			if (tx_active == false) {
 				tx_active = true;
 				{
@@ -136,7 +136,7 @@ void transmitter_thread(std::shared_ptr<TransmitThreadDescription> info) {
 			// Write data to the actual
 			int samples_written;
 			tx_buffer->getReadPointers(shmbuffs);
-			
+
 			/* Remark: hw_mutex is now used with stream operations! */
 			samples_written = slave->writeStream(tx_stream, shmbuffs, samples_available, flags, timestamp);
 			TX_DEBUG("writeStream " << tx_buffer->getSamplesAvailable() << " " << samples_available << " " << samples_written << "  " << limited << endl);
@@ -176,7 +176,7 @@ void transmitter_thread(std::shared_ptr<TransmitThreadDescription> info) {
 			// This timeout must be generous! If the code continues to call `readStreamStatus`
 			// timing of this loop is ruined tx buffer underflow quaranteed.
 			tx_buffer->wait_head(500 * 1000 /* us */);
-			if (tx_buffer->isEmpty() == false) 
+			if (tx_buffer->isEmpty() == false)
 				continue;
 
 			auto xxx = boost::get_system_time();
@@ -209,7 +209,7 @@ void transmitter_thread(std::shared_ptr<TransmitThreadDescription> info) {
 		}
 		else {
 			// Nothing to do and TX is idling.
-			// Wait for ring buffer's head to move 
+			// Wait for ring buffer's head to move
 			tx_buffer->wait_head(1000 * 1000 /* us */);
 		}
 	}

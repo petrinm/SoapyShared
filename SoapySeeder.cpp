@@ -5,8 +5,6 @@
 #include <SoapySDR/Registry.hpp>
 
 #include "SoapySeeder.hpp"
-#include "SimpleSharedRingBuffer.hpp"
-#include "TimestampedSharedRingBuffer.hpp"
 
 #include "AutoTx.hpp"
 #include "Utils.hpp"
@@ -37,7 +35,6 @@ public:
 
 SoapySeeder::SoapySeeder(const SoapySDR::Kwargs &args) :
 	shm("soapy"),
-	timestamped(false),
 	rx_stream(NULL),
 	block_size(0x2000),
 	n_blocks(16 * 1024),
@@ -86,10 +83,6 @@ SoapySeeder::SoapySeeder(const SoapySDR::Kwargs &args) :
 	// If buffer_size given use it to define number of blocks
 	if ((i = args.find("buffer_size")) != args.end())
 		n_blocks = stol(i->second) / block_size;
-
-	// Parse timestamped
-	if ((i = args.find("timestamped")) != args.end())
-		timestamped = (i->second == "true");
 
 	// Open slave device
 	slave = shared_ptr<SoapySDR::Device>(SoapySDR::Device::make(slaveArgs), SoapySDRDeleter());
@@ -174,15 +167,8 @@ SoapySDR::Stream* SoapySeeder::setupStream(const int direction, const std::strin
 		size_t n_channels = (channels.size() != 0 ? channels.size() : 1);
 
 		// Create SHM
-		if (timestamped)
-		{
-			rx_buffer = TimestampedSharedRingBuffer::create(shm, boost::interprocess::read_write,
-				format, n_blocks, block_size, n_channels);
-		}
-		else {
-			rx_buffer = SimpleSharedRingBuffer::create(shm, SharedRingBuffer::BufferMode::ManyToOne,
-				boost::interprocess::read_write, format, n_blocks * block_size, n_channels);
-		}
+		rx_buffer = SharedRingBuffer::create(shm, SharedRingBuffer::BufferMode::OneToMany,
+			boost::interprocess::read_write, format, n_blocks * block_size, n_channels);
 
 		rx_buffer->reset();
 		rx_buffer->setCenterFrequency(slave->getFrequency(SOAPY_SDR_RX, 0));
@@ -285,7 +271,7 @@ int SoapySeeder::deactivateStream(SoapySDR::Stream *stream, const int flags, con
 int SoapySeeder::simpleReadStream(SoapySDR::Stream *stream, void *const *buffs, const size_t numElems, int &flags, long long &timeNs, const long timeoutUs) {
 	TRACE_API_CALLS("simpleReadStream(" << numElems << "," << flags << ", " << timeoutUs << ")" << endl);
 
-	SimpleSharedRingBuffer* rx_buffer = dynamic_cast<SimpleSharedRingBuffer*>(this->rx_buffer.get());
+	SharedRingBuffer* rx_buffer = this->rx_buffer.get();
 	assert(rx_buffer != nullptr);
 
 	/*
@@ -353,87 +339,6 @@ int SoapySeeder::simpleReadStream(SoapySDR::Stream *stream, void *const *buffs, 
 }
 
 
-int SoapySeeder::timestampedReadStream(SoapySDR::Stream *stream, void *const *buffs, size_t numElems, int &flags, long long &timeNs, const long timeoutUs) {
-	TRACE_API_CALLS("timestampedReadStream(" << numElems << "," << flags << ", " << timeoutUs << ")" << endl);
-	TimestampedSharedRingBuffer* rx_buffer = dynamic_cast<TimestampedSharedRingBuffer*>(this->rx_buffer.get());
-	assert(rx_buffer != nullptr);
-
-	/*
-	 * Timestamped reading (multiple channels, timestamping, )
-	 */
-
-	// Limit number of samples to avoid overflow
-	// Require alignment!
-	if ((numElems % rx_buffer->getCtrl().block_size) != 0) {
-#ifdef DEBUG
-		cerr << "numElems " << numElems << " is not a nice number!" << endl;
-#endif
-		numElems -= (numElems % rx_buffer->getCtrl().block_size);
-		assert(numElems > 0);
-	}
-
-	flags = 0;
-	boost::posix_time::ptime abs_timeout = boost::get_system_time() + boost::posix_time::microseconds(timeoutUs);
-
-	int read_samples;
-	unsigned total_read_samples = 0;
-	const size_t block_size = rx_buffer->getCtrl().block_size;
-	const unsigned n_channels = rx_buffer->getNumChannels();
-
-
-	// Copy host apps buffer
-	void* host_buffs[n_channels];
-	for (unsigned ch = 0; ch < n_channels; ch++)
-		host_buffs[ch] = buffs[ch];
-
-	while (total_read_samples < numElems) {
-
-		// Get SHM write pointers
-		void* shmbuffs[n_channels];
-		rx_buffer->getWritePointers(shmbuffs);
-	
-		// Read the real stream in block size pieces to SHM
-		const long timeout_left = (abs_timeout - boost::get_system_time()).total_microseconds();
-		if ((read_samples = slave->readStream(stream, shmbuffs, block_size, flags, timeNs, timeoutUs)) <= 0) // TODO: Calculate remaining timeout time correctly
-			return read_samples;
-
-		if (read_samples != (int)block_size) {
-			cout << "read_samples " << numElems << "  " << read_samples << " " << block_size << endl;
-			read_samples = block_size;
-			//return read_samples;
-		}
-
-		// Require that slave returns wanted amount of samples
-		assert(read_samples == (int)block_size); // TODO: When the UHD is signaled to die this will fault!
-
-#ifdef SUPPORT_SOAPY_CONVERTERS
-		if (converter != NULL) {
-			// TODO:
-			// converter(input, output, numElems, converter_scale);
-		}
-#endif
-
-		// Indicate availibility of new data in the buffer
-		rx_buffer->write(read_samples, timeNs);
-
-		// Copy data also to host's buffer
-		for (unsigned ch = 0; ch < n_channels; ch++) {
-			if (host_buffs[ch] != nullptr) {
-				memcpy(host_buffs[ch], shmbuffs[ch], rx_buffer->getDatasize() * read_samples);
-				host_buffs[ch] = reinterpret_cast<void*>(reinterpret_cast<size_t>(host_buffs[ch]) + rx_buffer->getDatasize() * read_samples);
-			}
-		}
-
-		total_read_samples += read_samples;
-
-#ifdef DEBUG
-		cerr << hex << *shmbuffs << dec << endl;
-		cerr << "numElems = " << numElems << "; read_samples = " << read_samples << endl;
-#endif
-	}
-
-	return total_read_samples;
-}
 
 
 
@@ -448,13 +353,7 @@ int SoapySeeder::readStream(SoapySDR::Stream *stream, void *const *buffs, const 
 
 		}
 
-		//TimestampedSharedRingBuffer* rx_buffer = dynamic_cast<TimestampedSharedRingBuffer*>(rx_buffer);
-		if (timestamped) {
-			return timestampedReadStream(stream, buffs, numElems, flags, timeNs, timeoutUs);
-		}
-		else {
-			return simpleReadStream(stream, buffs, numElems, flags, timeNs, timeoutUs);
-		}
+		return simpleReadStream(stream, buffs, numElems, flags, timeNs, timeoutUs);
 	}
 
 	return 0;

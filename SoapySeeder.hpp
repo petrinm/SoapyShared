@@ -10,8 +10,6 @@
 
 
 #include "SharedRingBuffer.hpp"
-#include "SimpleSharedRingBuffer.hpp"
-#include "TimestampedSharedRingBuffer.hpp"
 
 
 class TransmitThreadDescription;
@@ -512,11 +510,9 @@ public:
 private:
 
 	void spawnTxThread();
-	int timestampedReadStream(SoapySDR::Stream *stream, void *const *buffs, size_t numElems, int &flags, long long &timeNs, const long timeoutUs);
 	int simpleReadStream(SoapySDR::Stream *stream, void *const *buffs, size_t numElems, int &flags, long long &timeNs, const long timeoutUs);
 
 	std::string shm;
-	bool timestamped;
 
 	std::shared_ptr<SoapySDR::Device> slave;
 	mutable boost::mutex hw_mutex;

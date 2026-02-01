@@ -15,8 +15,6 @@
 #include <liquid/liquid.h>
 
 
-#include "TimestampedSharedRingBuffer.hpp"
-#include "SimpleSharedRingBuffer.hpp"
 
 /***********************************************************************
  * Device interface
@@ -111,7 +109,7 @@ private:
 	/*
 	 * Args for transmitting
 	 */
-	std::unique_ptr<SimpleSharedRingBuffer> tx_buffer;
+	std::unique_ptr<SharedRingBuffer> tx_buffer;
 	double tx_frequency, tx_sample_rate;
 
 };
