@@ -19,6 +19,9 @@ class SharedRingBuffer
 {
 public:
 
+	// Timestamp type: nanoseconds since epoch
+	typedef long long timestamp_t;
+
 	// BufferState indicates the current operational state of the buffer.
 	enum BufferState {
 		Ready = 0,     // Buffer is initialized and ready for use, but no data streaming yet
@@ -34,55 +37,140 @@ public:
 
 
 	/*
-	 * Control structure which lives in the beginning of the SHM
+	 * Control structure that lives at the beginning of the shared memory segment.
 	 */
-	// Control structure that lives at the beginning of the shared memory segment.
 	struct BufferControl {
 		// Magic number to identify the control structure
 		uint32_t magic;
 
-		char label[32];                 // Text label for the device
-		enum BufferMode mode;           // Specifies the buffer's access mode (e.g. one-to-many, many-to-one)
+		// Text label for the device
+		char label[32];
 
-		// Ring buffer management fields
-		size_t head;                    // Write position in the ring buffer (stream offset)
-		size_t tail;                    // Read position in the ring buffer (stream offset)
-		enum BufferState state;         // Current buffer state (Ready, Streaming, EndOfBurst)
-		size_t n_channels;              // Number of parallel channels
+		// Specifies the buffer's access mode (e.g. one-to-many, many-to-one)
+		enum BufferMode mode;
 
-		// Metadata about the data being streamed
-		unsigned int version;           // Revision number of the buffer/control structure
-		char format[6];                 // Data format string (SoapySDR format codes)
-		double center_frequency;        // Center frequency in Hz
-		double sample_rate;             // Sample rate in samples per second
+		// Current buffer state (Ready, Streaming, EndOfBurst)
+		enum BufferState state;
 
-		// Synchronization primitives (placed in SHM, must be process-shared)
-		boost::interprocess::interprocess_mutex write_mutex;     // Mutex for writer synchronization
-		boost::interprocess::interprocess_mutex header_mutex;    // Mutex for header/metadata
-		boost::interprocess::interprocess_condition cond_head;   // Condition variable for head changes (new data written)
-		boost::interprocess::interprocess_condition cond_tail;   // Condition variable for tail changes (data consumed)
+		// Number of parallel channels
+		size_t n_channels;
+
+		/*
+		 * Ring buffer management fields
+		 */
+		// Write position in the ring buffer (stream offset)
+		size_t head;
+
+		// Read position in the ring buffer (stream offset)
+		size_t tail;
+
+		// Number of samples in the data buffer
+		size_t buffer_size;
+
+		/*
+		 * Timestamp buffer management fields
+		 */
+
+		// Timestamp buffer write position (stream offset)
+		size_t ts_head;
+
+		// Timestamp buffer read position (stream offset)
+		size_t ts_tail;
+
+		// Size of timestamp ring buffer (in entries, 0 = no timestamp buffer)
+		size_t ts_buffer_size;
+
+
+		/*
+		 * Metadata about the data being streamed
+		 */
+
+		// Revision number of the buffer/control structure
+		unsigned int version;
+
+		// Data format string (SoapySDR format codes)
+		char format[6];
+
+		// Center frequency in Hz
+		double center_frequency;
+
+		// Sample rate in samples per second
+		double sample_rate;
+
+		/*
+		 * Synchronization primitives (placed in SHM, must be process-shared)
+		 */
+
+		// Mutex for writer synchronization
+		boost::interprocess::interprocess_mutex write_mutex;
+
+		// Mutex for header/metadata
+		boost::interprocess::interprocess_mutex header_mutex;
+
+		// Condition variable for head changes (new data written)
+		boost::interprocess::interprocess_condition cond_head;
+
+		// Condition variable for tail changes (data consumed)
+		boost::interprocess::interprocess_condition cond_tail;
 	};
 
 
 	// Magic numbers to identify the control structure
-	static const uint32_t Magic = 0x50B982;
 	static const uint32_t MagicOneToMany = 0x50B983; // For one-to-many mode
 	static const uint32_t MagicManyToOne = 0x50B984; // For many-to-one mode
 
 	/*
-	 * Check if the shared memory buffer exists
+	 * Timestamp entry structure for timestamp ring buffer
 	 */
-	static bool checkSHM(std::string name);
+	struct TimestampEntry {
+		// Timestamp of first sample in batch (nanoseconds)
+		uint64_t timestamp_ns;
+		// Position in data ring buffer where batch starts
+		size_t data_position;
+		// Number of samples in this batch
+		uint32_t sample_count;
+		// Padding for alignment (16-byte aligned)
+		uint32_t reserved;
+	};
+
+	/*
+	 * Check if the shared memory buffer exists
+	 * @param name: Name of the shared memory buffer
+	 * @return True if the shared memory buffer exists, false otherwise
+	 */
+	static bool checkSHM(const std::string &name);
 
 	/*
 	 * Create a new shared memory buffer
+	 * @param name: Name for the shared memory buffer
+	 * @param mode: Buffer mode (OneToMany or ManyToOne)
+	 * @param access_mode: Access mode for the shared memory
+	 * @param format: Data format string (SoapySDR format codes)
+	 * @param buffer_size: Size of the data buffer
+	 * @param n_channels: Number of parallel channels
+	 * @param ts_buffer_size: Optional size of timestamp buffer (0 = no timestamp buffer)
+	 * @return Unique pointer to the created SharedRingBuffer instance
 	 */
-	static std::unique_ptr<SharedRingBuffer> create(const std::string &name, enum BufferMode mode, boost::interprocess::mode_t access_mode, std::string format = std::string(), size_t buffer_size = 0, size_t n_channels=1);
+	static std::unique_ptr<SharedRingBuffer> create(
+		const std::string &name,
+		enum BufferMode mode,
+		boost::interprocess::mode_t access_mode,
+		std::string format = std::string(),
+		size_t buffer_size = 0,
+		size_t n_channels = 1,
+		size_t ts_buffer_size = 0);
 
 	/*
 	 * Open a shared memory buffer
+	 * @param name: Name for the shared memory buffer
+	 * @param mode: Buffer mode (OneToMany or ManyToOne)
+	 * @param access_mode: Access mode for the shared memory
+	 * @return Unique pointer to the opened SharedRingBuffer instance
 	 */
-	static std::unique_ptr<SharedRingBuffer> open(const std::string &name, enum BufferMode mode, boost::interprocess::mode_t access_mode);
+	static std::unique_ptr<SharedRingBuffer> open(
+		const std::string &name,
+		enum BufferMode mode,
+		boost::interprocess::mode_t access_mode);
 
 	/*
 	 * Destructor
@@ -91,6 +179,7 @@ public:
 
 	/*
 	 * Get the current state of the buffer
+	 * @return Current state of the buffer
 	 */
 	enum BufferState getState() const { return ctrl->state; }
 
@@ -119,7 +208,13 @@ public:
 	 * Is the ring buffer empty?
 	 * @return True if the ring buffer is empty, false otherwise
 	 */
-	bool isEmpty() const { return tail == ctrl->head; }
+	bool isEmpty() const {
+		if (ctrl->mode == ManyToOne) {
+			return ctrl->tail == ctrl->head;
+		} else {
+			return tail == ctrl->head;
+		}
+	}
 
 	/*
 	 * Get number of samples that can be written to the buffer
@@ -170,14 +265,14 @@ public:
 	 * @return Number of available samples in the buffer
 	 * @note Call getPointer() before calling this function!
 	 */
-	size_t read(size_t maxElems, long long& timestamp);
+	size_t read(size_t maxElems, timestamp_t& timestamp);
 
 	/*
 	 * Write items to buffer and move the end pointer towards
 	 * @param numItems: Number of items to write
 	 * @param timestamp: Sampling time of the next
 	 */
-	void write(size_t numItems, long long timestamp);
+	void write(size_t numItems, timestamp_t timestamp);
 
 	/*
 	 * Get format string
@@ -278,13 +373,41 @@ public:
 	void wait_head(const boost::posix_time::ptime &abs_timeout);
 
 	/*
-	 * Stream operator to print the buffer description
+	 * Stream operator to print the buffer description.
+	 * @param stream: Output stream
 	 */
 	void print(std::ostream& stream) const;
 
+	/*
+	 * Get the control structure
+	 * @return Reference to the control structure
+	 */
 	const BufferControl& getCtrl() const {
 		return *ctrl;
 	}
+
+	/*
+	 * Timestamp buffer management
+	 * @note Timestamp buffer is created/opened automatically with the data buffer
+	 * in the same shared memory allocation
+	 */
+
+	/*
+	 * Write a timestamp entry after writing a data batch
+	 * @param timestamp_ns: Hardware timestamp from the batch (nanoseconds)
+	 * @param data_position: Data buffer head position BEFORE writing this batch
+	 * @param sample_count: Number of samples in this batch
+	 */
+	void writeTimestampEntry(timestamp_t timestamp_ns, size_t data_position, size_t sample_count);
+
+	/*
+	 * Get timestamp for the last sample in a read batch
+	 * @param data_head: Current data buffer head position
+	 * @param data_tail_before: Data buffer tail position before the read
+	 * @param samples_read: Number of samples just read
+	 * @return Timestamp of the last sample in nanoseconds, or 0 if not found
+	 */
+	timestamp_t getTimestampForLastSample(size_t data_head, size_t data_tail_before, size_t samples_read) const;
 
 private:
 	/*
@@ -298,8 +421,14 @@ private:
 	std::string name;
 	size_t datasize, buffer_size;
 
-	boost::interprocess::shared_memory_object shm;
-	boost::interprocess::mapped_region mapped_ctrl, mapped_data;
+	// Control SHM: contains control structure and timestamp buffer
+	boost::interprocess::shared_memory_object shm_control;
+	boost::interprocess::mapped_region mapped_control;  // Maps entire control SHM (control + timestamp buffer)
+
+	// Channel SHMs: one per channel for data buffers
+	std::vector<boost::interprocess::shared_memory_object> shm_channels;
+	size_t ts_buffer_size;    // Number of timestamp entries
+	TimestampEntry* ts_entries;  // Pointer to timestamp entries array (starts at second page)
 
 public:
 	BufferControl* ctrl;
