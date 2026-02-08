@@ -80,4 +80,11 @@ SOAPY_SDR_MODULE_UTIL(
     LIBRARIES ${SoapyShared_LIBRARIES}
 )
 
-#add_subdirectory(units)
+########################################################################
+# Setup Unit Tests
+########################################################################
+option(ENABLE_UNIT_TESTS "Enable unit tests" OFF)
+if(ENABLE_UNIT_TESTS)
+    add_subdirectory(units)
+endif()
+
