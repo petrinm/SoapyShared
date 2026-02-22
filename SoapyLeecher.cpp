@@ -16,7 +16,7 @@
 #include "SharedRingBuffer.hpp"
 
 #include "SoapyLeecher.hpp"
-#include "Utils.hpp"
+#include "SHMRegistry.hpp"
 
 //#define DEBUG
 //#define DEBUG_RESAMPLING

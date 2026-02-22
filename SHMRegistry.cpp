@@ -1,5 +1,5 @@
 
-#include "Utils.hpp"
+#include "SHMRegistry.hpp"
 
 #include <iostream>
 
@@ -31,7 +31,7 @@ std::vector<std::string> list()
 		const char *name_array = static_cast<const char *>(mapped.get_address());
 
 		for (size_t i = 0; i < registry_size; i++)
-        {
+		{
 			const char *list_name = &name_array[max_name_len * i];
 			if (list_name[0] != '\0')
 				shms.push_back(list_name);
@@ -57,8 +57,8 @@ void add(const std::string &name)
 
 		const size_t invalid_index = ~0;
 		size_t empty = invalid_index;
-        for (size_t i = 0; i < registry_size; i++)
-        {
+		for (size_t i = 0; i < registry_size; i++)
+		{
 			char *list_name = &name_array[max_name_len * i];
 			if (list_name[0] == '\0' && empty == invalid_index)
 				empty = i; // Note the first empty slot
@@ -84,11 +84,11 @@ void remove(const std::string &name)
 	try
 	{
 		shared_memory_object registry_shm(open_or_create, shm_name, read_write);
-        mapped_region mapped(registry_shm, read_write, 0, registry_size * max_name_len);
-        char *name_array = static_cast<char *>(mapped.get_address());
+		mapped_region mapped(registry_shm, read_write, 0, registry_size * max_name_len);
+		char *name_array = static_cast<char *>(mapped.get_address());
 
-        for (size_t i = 0; i < registry_size; i++)
-        {
+		for (size_t i = 0; i < registry_size; i++)
+		{
 			char *list_name = &name_array[max_name_len * i];
 			if (memcmp(list_name, name.c_str(), name.size()) == 0)
 			{
@@ -102,6 +102,5 @@ void remove(const std::string &name)
 		cerr << "SHMRegistry error: " << e.what() << endl;
 	}
 }
-
 
 }; // namespace SHMRegistry

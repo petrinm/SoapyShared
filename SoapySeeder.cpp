@@ -7,7 +7,7 @@
 #include "SoapySeeder.hpp"
 
 #include "AutoTx.hpp"
-#include "Utils.hpp"
+#include "SHMRegistry.hpp"
 
 //#define DEBUG
 

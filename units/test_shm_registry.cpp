@@ -7,7 +7,7 @@
 #include <cppunit/ui/text/TestRunner.h>
 #include <cppunit/extensions/HelperMacros.h>
 
-#include "../Utils.hpp"
+#include "SHMRegistry.hpp"
 
 using namespace std;
 
