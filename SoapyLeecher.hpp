@@ -1,19 +1,16 @@
+#pragma once
+
 #include <SoapySDR/Device.hpp>
 #include <SoapySDR/Registry.hpp>
 
-
 #include <unistd.h>
 #include <cstring> // memcpy
-#include <clocale>
-#include <complex>
-#include <stdexcept>
-#include <iostream>
 #include <string>
 #include <memory> // unique_ptr
-#include <chrono>
 
 #include <liquid/liquid.h>
 
+#include "SharedRingBuffer.hpp"
 
 
 /***********************************************************************

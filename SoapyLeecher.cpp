@@ -48,7 +48,6 @@ SoapyLeecher::SoapyLeecher(const SoapySDR::Kwargs &args):
 		shm = i->second;
 
 	// Open shared memory buffer
-	// TODO: R&W right required for some reason..
 	rx_buffer = SharedRingBuffer::open(shm, SharedRingBuffer::BufferMode::OneToMany, boost::interprocess::read_only);
 
 #ifdef DEBUG
@@ -244,10 +243,10 @@ void SoapyLeecher::closeStream(SoapySDR::Stream *stream) {
 	TRACE_API_CALLS("closeStream(" << (stream == RX_STREAM ? "RX" : "TX") << ")" << endl);
 
 	if (stream == RX_STREAM) {
-		rx_buffer.release();
+		rx_buffer.reset();
 	}
 	else if (stream == TX_STREAM) {
-		tx_buffer.release();
+		tx_buffer.reset();
 	}
 }
 
@@ -330,7 +329,7 @@ int SoapyLeecher::deactivateStream(SoapySDR::Stream *stream, const int flags, co
 int SoapyLeecher::resampledReadStream(SoapySDR::Stream *stream, void *const *buffs, const size_t numElems, int &flags, long long &timeNs, const long timeoutUs) {
 	(void) flags; (void) timeNs;
 
-	long long timestamp;
+	SharedRingBuffer::timestamp_t timestamp;
 	liquid_float_complex s;
 	unsigned new_samples = 0;
 	unsigned int wanted_samples = ceil(numElems / resampl_rate);
@@ -456,7 +455,7 @@ int SoapyLeecher::readStream(SoapySDR::Stream *stream, void *const *buffs, const
 		boost::posix_time::ptime abs_timeout = boost::get_system_time() + boost::posix_time::microseconds(timeoutUs);
 		const size_t n_channels = rx_buffer->getNumChannels();
 
-		long long timestamp;
+		SharedRingBuffer::timestamp_t timestamp;
 		unsigned int wanted_samples = numElems;
 		unsigned int new_samples = 0;
 
@@ -476,6 +475,7 @@ int SoapyLeecher::readStream(SoapySDR::Stream *stream, void *const *buffs, const
 			size_t data_tail_before = rx_buffer->tail;
 
 			size_t samples_available = rx_buffer->read(wanted_samples, timestamp);
+
 #ifdef DEBUG
 			cerr << "# " <<  samples_available << endl;
 #endif
@@ -484,9 +484,12 @@ int SoapyLeecher::readStream(SoapySDR::Stream *stream, void *const *buffs, const
 			wanted_samples -= samples_available;
 
 			if (samples_available > 0) {
-				if (0) { // && (flags & SOAPY_SDR_HAS_TIME) == 0 // Only on the first read
+				// Get timestamp for the last sample if timestamp buffer is available
+				SharedRingBuffer::timestamp_t last_sample_timestamp = rx_buffer->getTimestampForLastSample(
+					rx_buffer->ctrl->head, data_tail_before, samples_available);
+				if (last_sample_timestamp != 0) {
 					flags |= SOAPY_SDR_HAS_TIME;
-					timeNs = timestamp;
+					timeNs = last_sample_timestamp;
 				}
 
 				// Copy new samples to outputs

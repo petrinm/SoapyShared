@@ -1,3 +1,5 @@
+#pragma once
+
 #include <string>
 #include <memory> // unique_ptr, shared_ptr
 
@@ -510,7 +512,6 @@ public:
 private:
 
 	void spawnTxThread();
-	int simpleReadStream(SoapySDR::Stream *stream, void *const *buffs, size_t numElems, int &flags, long long &timeNs, const long timeoutUs);
 
 	std::string shm;
 

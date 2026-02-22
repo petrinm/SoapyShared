@@ -67,7 +67,7 @@ void transmitter_thread(std::shared_ptr<TransmitThreadDescription> info) {
 
 	unsigned int tx_active = false;
 	void* shmbuffs[n_channels];
-	long long timestamp = 0;
+	SharedRingBuffer::timestamp_t timestamp = 0;
 
 	TX_DEBUG("TX thread running..." << endl);
 	tx_buffer->setState(SharedRingBuffer::Ready);

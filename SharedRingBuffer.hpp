@@ -1,5 +1,4 @@
-#ifndef __SHARED_RING_BUFFER_H__
-#define __SHARED_RING_BUFFER_H__
+#pragma once
 
 #include <string>
 #include <memory>
@@ -443,6 +442,3 @@ public:
 };
 
 std::ostream& operator<<(std::ostream& stream, const SharedRingBuffer& buf);
-
-
-#endif /* __SHARED_RING_BUFFER_H__*/

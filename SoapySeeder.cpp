@@ -166,9 +166,15 @@ SoapySDR::Stream* SoapySeeder::setupStream(const int direction, const std::strin
 	if (direction == SOAPY_SDR_RX) {
 		size_t n_channels = (channels.size() != 0 ? channels.size() : 1);
 
-		// Create SHM
+		// Parse timestamp buffer size (default: 1024 entries)
+		size_t ts_buffer_size = 1024;
+		SoapySDR::Kwargs::const_iterator ts_i;
+		if ((ts_i = args.find("ts_buffer_size")) != args.end())
+			ts_buffer_size = stol(ts_i->second);
+
+		// Create SHM with timestamp buffer in same allocation
 		rx_buffer = SharedRingBuffer::create(shm, SharedRingBuffer::BufferMode::OneToMany,
-			boost::interprocess::read_write, format, n_blocks * block_size, n_channels);
+			boost::interprocess::read_write, format, n_blocks * block_size, n_channels, ts_buffer_size);
 
 		rx_buffer->reset();
 		rx_buffer->setCenterFrequency(slave->getFrequency(SOAPY_SDR_RX, 0));
@@ -221,7 +227,7 @@ void SoapySeeder::closeStream(SoapySDR::Stream *stream) {
 	if (stream == rx_stream) {
 		slave->closeStream(stream);
 		rx_stream = nullptr;
-		rx_buffer.release();
+		rx_buffer.reset();
 	}
 	else if (stream == tx_stream) {
 		tx_stream = nullptr;
@@ -268,80 +274,6 @@ int SoapySeeder::deactivateStream(SoapySDR::Stream *stream, const int flags, con
 }
 
 
-int SoapySeeder::simpleReadStream(SoapySDR::Stream *stream, void *const *buffs, const size_t numElems, int &flags, long long &timeNs, const long timeoutUs) {
-	TRACE_API_CALLS("simpleReadStream(" << numElems << "," << flags << ", " << timeoutUs << ")" << endl);
-
-	SharedRingBuffer* rx_buffer = this->rx_buffer.get();
-	assert(rx_buffer != nullptr);
-
-	/*
-	 * Simplified receive (single channel, no blocks, no timestampping)
-	 */
-
-	// Limit number of samples to avoid overflow of SHM buffer.
-	// Overflow of SHM buffer is problem if only if memory looping is not used.
-	// This could be fixed by perfoming two reads to slave bu
-	size_t readElems = numElems;
-	if (readElems > rx_buffer->getSamplesLeft()) {
-		readElems = rx_buffer->getSamplesLeft();
-		cerr << "$";
-	}
-
-	const unsigned n_channels = rx_buffer->getNumChannels();
-	boost::posix_time::ptime abs_timeout = boost::get_system_time() + boost::posix_time::microseconds(timeoutUs);
-
-	int read_samples = 0;
-	unsigned int total_read_samples = 0;
-
-	// Copy host apps buffer
-	void* host_buffs[n_channels];
-	for (unsigned ch = 0; ch < n_channels; ch++)
-		host_buffs[ch] = buffs[ch];
-
-	while (total_read_samples < numElems) {
-
-		// Get SHM write pointers
-		void* shm_buffs[n_channels];
-		rx_buffer->getWritePointers(shm_buffs);
-
-		// Read the real stream
-		// Remark: hw_mutex is not used with streams.
-		const long timeout_left = (abs_timeout - boost::get_system_time()).total_microseconds();
-		if ((read_samples = slave->readStream(stream, shm_buffs, readElems, flags, timeNs, timeout_left)) <= 0)
-			return read_samples;
-
-#ifdef SUPPORT_SOAPY_CONVERTERS
-		if (converter != NULL) {
-			// TODO:
-			// converter(input, output, numElems, converter_scale);
-		}
-#endif
-		// Indicate availibility of new data in the buffer
-		rx_buffer->write(read_samples, timeNs);
-
-		// Copy data also to caller's buffer
-		for (unsigned ch = 0; ch < n_channels; ch++) {
-			if (buffs[ch] != nullptr) {
-				memcpy(host_buffs[ch], shm_buffs[ch], rx_buffer->getDatasize() * read_samples);
-				host_buffs[ch] = reinterpret_cast<void*>(reinterpret_cast<size_t>(host_buffs[ch]) + rx_buffer->getDatasize() * read_samples);
-			}
-		}
-
-		total_read_samples += read_samples;
-
-#ifdef DEBUG
-		cerr << hex << shm_buffs[0] << dec << endl;
-		cerr << "numElems = " << numElems << "; read_samples = " << total_read_samples << endl;
-#endif
-	}
-
-	return total_read_samples;
-}
-
-
-
-
-
 int SoapySeeder::readStream(SoapySDR::Stream *stream, void *const *buffs, const size_t numElems, int &flags, long long &timeNs, const long timeoutUs) {
 	TRACE_API_CALLS("readStream(" << numElems << "," << flags << ", " << timeoutUs << ")" << endl);
 
@@ -349,11 +281,60 @@ int SoapySeeder::readStream(SoapySDR::Stream *stream, void *const *buffs, const 
 		if (rx_buffer.get() == nullptr)
 			return SOAPY_SDR_STREAM_ERROR;
 
-		if (tx_thread.get() != nullptr) {
+	SharedRingBuffer* rx_buffer = this->rx_buffer.get();
+	assert(rx_buffer != nullptr);
 
+	const unsigned n_channels = rx_buffer->getNumChannels();
+		const boost::posix_time::ptime abs_timeout = boost::get_system_time() + boost::posix_time::microseconds(timeoutUs);
+
+	int read_samples = 0;
+	unsigned int total_read_samples = 0;
+
+		// Make a copy of host apps buffer pointers so that we can modify them later.
+	void* host_buffs[n_channels];
+	for (unsigned ch = 0; ch < n_channels; ch++)
+		host_buffs[ch] = buffs[ch];
+
+	while (total_read_samples < numElems) {
+
+			/* Get SHM write/head pointers */
+		void* shm_buffs[n_channels];
+		rx_buffer->getWritePointers(shm_buffs);
+
+			/* Read samples from the real stream to SHM buffer
+			 * Remark: hw_mutex is not needed for streams operations. */
+		const long timeout_left = (abs_timeout - boost::get_system_time()).total_microseconds();
+			if ((read_samples = slave->readStream(stream, shm_buffs, numElems, flags, timeNs, timeout_left)) <= 0) {
+			return read_samples;
+			}
+
+#ifdef SUPPORT_SOAPY_CONVERTERS
+		if (converter != NULL) {
+			// TODO:
+			// converter(input, output, numElems, converter_scale);
 		}
+#endif
+			/* Indicate availibility of new data in the buffer */
+		rx_buffer->write(read_samples, timeNs);
 
-		return simpleReadStream(stream, buffs, numElems, flags, timeNs, timeoutUs);
+			/* Copy data also to host's buffer */
+			const size_t raw_size = rx_buffer->getDatasize() * read_samples; //copy_samples;
+		for (unsigned ch = 0; ch < n_channels; ch++) {
+			if (buffs[ch] != nullptr) {
+					memcpy(host_buffs[ch], shm_buffs[ch], raw_size);
+					host_buffs[ch] = reinterpret_cast<void*>(reinterpret_cast<size_t>(host_buffs[ch]) + raw_size);
+			}
+		}
+		total_read_samples += read_samples;
+
+
+#ifdef DEBUG
+		cerr << hex << shm_buffs[0] << dec << endl;
+			cerr << "numElems = " << numElems << "; read_samples = " << total_read_samples << " timeNs = " << timeNs << endl;
+#endif
+	}
+
+	return total_read_samples;
 	}
 
 	return 0;
@@ -439,9 +420,7 @@ SoapySDR::KwargsList findSeeder(const SoapySDR::Kwargs &args)
 	}
 	slaveArgs["stop_recursion"] = "";
 
-	const auto slaves = SoapySDR::Device::enumerate(slaveArgs);
-
-	if (1 && slaves.size() > 0) {
+	const SoapySDR::KwargsList slaves = SoapySDR::Device::enumerate(slaveArgs);
 
 		for(auto dev: slaves) {
 
@@ -461,8 +440,6 @@ SoapySDR::KwargsList findSeeder(const SoapySDR::Kwargs &args)
 				resultArgs["label"] = "SoapySeeder: " + dev["driver"];
 
 			results.push_back(resultArgs);
-		}
-
 	}
 
 	return results;

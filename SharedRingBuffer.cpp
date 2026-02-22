@@ -24,6 +24,7 @@
 	#endif
 #elif defined(_WIN32)
 	#include <Windows.h>
+	#include <system_error>
 #endif
 
 
@@ -68,11 +69,12 @@ unique_ptr<SharedRingBuffer> SharedRingBuffer::create(
 	inst->owner = true;
 
 	// Create control SHM
-	inst->shm_control = shared_memory_object(open_or_create, name.c_str(), access_mode);
+	// Control SHM must be opened always in read_write mode to allow mutex locking.
+	inst->shm_control = shared_memory_object(open_or_create, name.c_str(), read_write);
 	inst->shm_control.truncate(control_shm_size);
 
 	// Map entire control SHM (control + timestamp buffer if present)
-	inst->mapped_control = mapped_region(inst->shm_control, access_mode, 0, control_shm_size);
+	inst->mapped_control = mapped_region(inst->shm_control, read_write, 0, control_shm_size);
 	memset(inst->mapped_control.get_address(), 0, control_shm_size);
 	inst->ctrl = new (inst->mapped_control.get_address()) BufferControl;
 
@@ -134,24 +136,28 @@ unique_ptr<SharedRingBuffer> SharedRingBuffer::open(const string &name, enum Buf
 	unique_ptr<SharedRingBuffer> instt = unique_ptr<SharedRingBuffer>(inst);
 
 	// Open control SHM
-	inst->shm_control = shared_memory_object(open_only, name.c_str(), access_mode);
+	// Control SHM must be opened always in read_write mode to allow mutex locking.
+	inst->shm_control = shared_memory_object(open_only, name.c_str(), read_write);
 	offset_t control_shm_size;
 	if (!inst->shm_control.get_size(control_shm_size) || control_shm_size == 0)
 		throw runtime_error("Control SHM empty!");
 
 	// Map entire control SHM (control + timestamp buffer if present)
-	inst->mapped_control = mapped_region(inst->shm_control, access_mode, 0, static_cast<size_t>(control_shm_size));
+	inst->mapped_control = mapped_region(inst->shm_control, read_write, 0, static_cast<size_t>(control_shm_size));
 	inst->ctrl = static_cast<BufferControl*>(inst->mapped_control.get_address());
 
 	// Check for mode-specific magic number
 	uint32_t expected_magic = (mode == BufferMode::ManyToOne) ? SharedRingBuffer::MagicManyToOne : SharedRingBuffer::MagicOneToMany;
 	if (inst->ctrl->magic != expected_magic)
-		throw(runtime_error("Buffer operating mode doesn't match! Expected " + to_string(mode) + " but found " + to_string(inst->ctrl->mode)));
+		throw(runtime_error("Buffer operating mode doesn't match! Expected " + to_string(mode)
+			+ " but found " + to_string(inst->ctrl->mode) + " magic = " + to_string(inst->ctrl->magic)));
 
 	// Parse format information
 	inst->datasize = SoapySDR::formatToSize(inst->ctrl->format);
-	if (inst->datasize == 0 || inst->ctrl->sample_rate == 0)
-		throw runtime_error("Broken SHM!");
+	if (inst->datasize == 0 || inst->ctrl->sample_rate == 0) {
+		throw runtime_error("Broken SHM! datasize = " + to_string(inst->datasize) +
+			", sample_rate = " + to_string(inst->ctrl->sample_rate));
+	}
 
 	inst->version = inst->ctrl->version;
 	inst->tail = inst->ctrl->head;
@@ -173,17 +179,22 @@ unique_ptr<SharedRingBuffer> SharedRingBuffer::open(const string &name, enum Buf
 
 	// Open each channel SHM and determine buffer_size from first channel
 	for (size_t ch = 0; ch < inst->ctrl->n_channels; ch++) {
+
+		// Open the channel SHM.
 		string channel_shm_name = name + "_ch" + to_string(ch);
 		inst->shm_channels[ch] = shared_memory_object(open_only, channel_shm_name.c_str(), access_mode);
 
+		// Get the size of the channel SHM.
 		offset_t channel_shm_size;
 		if (!inst->shm_channels[ch].get_size(channel_shm_size) || channel_shm_size == 0) {
 			throw runtime_error("Channel " + std::to_string(ch) + " SHM empty!");
 		}
 
-		if (channel_shm_size != inst->datasize * inst->buffer_size) {
+		// Verify that the channel SHM size matches the expected size.
+		if (static_cast<size_t>(channel_shm_size) != inst->datasize * inst->buffer_size) {
 			throw runtime_error("Channel " + std::to_string(ch) + " SHM size mismatch! Expected " +
-				std::to_string(inst->datasize * inst->buffer_size) + " bytes, but got " + std::to_string(channel_shm_size) + " bytes!");
+				std::to_string(inst->datasize * inst->buffer_size) + " bytes, but got " +
+				std::to_string(channel_shm_size) + " bytes!");
 		}
 	}
 
@@ -199,11 +210,13 @@ SharedRingBuffer::SharedRingBuffer(std::string name) :
 	ctrl(NULL), tail(0), version(0), owner(false), owns_write_lock(false)
 { }
 
-
 void SharedRingBuffer::mapBuffer(boost::interprocess::mode_t mode) {
 
-	size_t sz = datasize * buffer_size;
-	size_t page_size = mapped_region::get_page_size();
+	// Calculate the size of the data buffer for one channel.
+	const size_t raw_total_size = datasize * buffer_size;
+
+	// Get the page size.
+	const size_t page_size = mapped_region::get_page_size();
 
 	buffers.resize(ctrl->n_channels);
 	std::fill(buffers.begin(), buffers.end(), nullptr);
@@ -224,79 +237,79 @@ void SharedRingBuffer::mapBuffer(boost::interprocess::mode_t mode) {
 			prot_flags = PROT_READ | PROT_WRITE;
 		}
 
-		// Get virtual address space of double size for circular buffer
-		buffer = mmap(NULL, 2 * sz, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-		if (buffer == MAP_FAILED)
-			throw runtime_error("Out of virtual memory");
+		const int fd = shm_channels[ch].get_mapping_handle().handle;
 
-		// Each channel has its own SHM, data starts at offset 0 (page-aligned)
-		int fd = shm_channels[ch].get_mapping_handle().handle;
-
-		// Map the first copy of the shared memory for this channel
-		void* result1 = mmap(buffer, sz, prot_flags, MAP_SHARED | MAP_FIXED, fd, 0);
-		if (result1 == MAP_FAILED) {
-			munmap(buffer, 2 * sz);
-			char errmsg[256];
-			snprintf(errmsg, sizeof(errmsg), "Failed to map shared memory (first mapping, channel %zu): %s", ch, strerror(errno));
-			throw runtime_error(errmsg);
+		// Reserve virtual address space with double of size for circular buffer
+		buffer = mmap(NULL, 2 * raw_total_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		if (buffer == MAP_FAILED) {
+			throw runtime_error("Failed to create virtual memory region for channel " +
+				std::to_string(ch) + "): " + strerror(errno));
 		}
 
-		// For the second mapping, we need to create a circular buffer view by mapping
-		// the same physical pages to a second virtual address.
+		// Map the SHM virtual address space first time.
+		void* result1 = mmap(buffer, raw_total_size, prot_flags, MAP_SHARED | MAP_FIXED, fd, 0);
+		if (result1 == MAP_FAILED) {
+			munmap(buffer, 2 * raw_total_size);
+			throw runtime_error("Failed to map shared memory"
+				"(first mapping, channel " + std::to_string(ch) + "): " + strerror(errno));
+		}
+
+		if (buffer != result1) {
+			throw runtime_error("Failed to map shared memory to defined location!");
+		}
+
+		// Create a circular buffer view by mapping by mapping the same shm second time.
 		// Try the simple approach first: map directly with MAP_FIXED
 		// If that fails (Linux doesn't allow same fd/offset twice), leave it unmapped
-#ifdef __linux__
+		uint8_t* loop_ptr = static_cast<uint8_t*>(buffer) + raw_total_size;
+
 		// Unmap the anonymous region at the target address first
-		munmap((uint8_t*)buffer + sz, sz);
+		munmap(loop_ptr, raw_total_size);
 
 		// Try to map the second region directly (this will fail on Linux for same fd/offset)
-		void* result2 = mmap((uint8_t*)buffer + sz, sz, prot_flags, MAP_SHARED | MAP_FIXED, fd, 0);
+		void* result2 = mmap(loop_ptr, raw_total_size, prot_flags, MAP_SHARED | MAP_FIXED, fd, 0);
 		if (result2 == MAP_FAILED) {
-			// MAP_FIXED failed - Linux doesn't allow mapping the same fd/offset twice
-			// Remap as PROT_NONE to prevent accidental access (which would cause bus error)
-			// The buffer will still work, but wrap-around must be handled in software
-			void* anon_map = mmap((uint8_t*)buffer + sz, sz, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
-			if (anon_map == MAP_FAILED) {
-				// If we can't even map anonymous memory, log but continue
-				// The region is already unmapped, so accesses will cause SIGSEGV
-				// but at least we tried
-			}
+			throw runtime_error("Failed to map shared memory"
+				"(second mapping, channel " + std::to_string(ch) + "): " + strerror(errno));
 		}
-#else
-		// On macOS/other POSIX, try regular mmap (creates independent mapping to same physical pages)
-		void* result2 = mmap((uint8_t*)buffer + sz, sz, prot_flags, MAP_SHARED | MAP_FIXED, fd, 0);
-		if (result2 == MAP_FAILED) {
-			munmap(buffer, sz);
-			char errmsg[256];
-			snprintf(errmsg, sizeof(errmsg), "Failed to map shared memory (second mapping, channel %zu): %s", ch, strerror(errno));
-			throw runtime_error(errmsg);
-		}
-#endif
-		// TODO: Correct access modes
 
 		// Maybe:
-		// mapped_data = mapped_region(shm, mode, page_size, sz, buffer);
-		// mapped_data_loop = mapped_region(shm, mode, page_size, sz, &buffer[sz]);
+		// mapped_data = mapped_region(shm, mode, page_size, raw_total_size, buffer);
+		// mapped_data_loop = mapped_region(shm, mode, page_size, raw_total_size, &buffer[raw_total_size]);
 
 #elif defined(_WIN32)
 		/*
 		* Windows implementation
 		*/
 
-		// Make a temporary virtual memory alloc to see where the windows maps its
-		void* virtual_ptr = VirtualAlloc(0, 2 * sz, MEM_RESERVE, PAGE_NOACCESS);
-		if (virtual_ptr == NULL)
-			throw runtime_error("Out of virtual memory");
-		VirtualFree(virtual_ptr, 0, MEM_RELEASE);
-
 		HANDLE hMapFile = shm_channels[ch].get_mapping_handle().handle;
 		DWORD map_access = (mode == boost::interprocess::read_only) ? FILE_MAP_READ : FILE_MAP_ALL_ACCESS;
-		void* baseptr = MapViewOfFileEx(hMapFile, map_access, 0, 0, sz, virtual_ptr);
-		MapViewOfFileEx(hMapFile, map_access, 0, 0, sz, (void*)((char*)virtual_ptr + sz));
 
-		cerr << "Org " << hex << virtual_ptr << "   " << baseptr << dec << endl;
-		if (virtual_ptr != baseptr)
+		// Make a temporary virtual memory alloc to see where the windows maps its
+		buffer = VirtualAlloc(0, 2 * raw_total_size, MEM_RESERVE, PAGE_NOACCESS);
+		if (buffer == NULL)
+			throw runtime_error("Out of virtual memory");
+		VirtualFree(buffer, 0, MEM_RELEASE);
+
+		// Map the SHM virtual address space first time.
+		void* result1 = MapViewOfFileEx(hMapFile, map_access, 0, 0, raw_total_size, virtual_ptr);
+		if (result1 == NULL) {
+			DWORD error = ::GetLastError();
+			throw runtime_error("Failed to map shared memory"
+				"(first mapping, channel " + std::to_string(ch) + "): " + std::system_category().message(error));
+		}
+		if (buffer != baseptr) {
 			throw runtime_error("Failed to map shared memory to defined location!");
+		}
+
+		// Map the SHM virtual address space second time.
+		uint8_t* loop_ptr = static_cast<uint8_t*>(buffer) + raw_total_size;
+		void* result2 = MapViewOfFileEx(hMapFile, map_access, 0, 0, raw_total_size, loop_ptr);
+		if (result2 == NULL) {
+			DWORD error = ::GetLastError();
+			throw runtime_error("Failed to map shared memory"
+				"(second mapping, channel " + std::to_string(ch) + "): " + std::system_category().message(error));
+		}
 
 #else
 	#error "Looping is not supported on this platform!"
@@ -341,14 +354,14 @@ SharedRingBuffer::~SharedRingBuffer() {
 	for (size_t ch = 0; ch < buffers.size(); ch++)
 	{
 		void *buffer = buffers[ch];
-		size_t sz = datasize * buffer_size;
+		const size_t raw_total_size = datasize * buffer_size;
 
 		if (buffer != NULL) {
 #if (defined(__linux__) || defined(__APPLE__))
-			munmap(buffer, 2 * sz);
+			munmap(buffer, 2 * raw_total_size);
 #elif defined(_WIN32)
 			UnmapViewOfFile(buffer);
-			UnmapViewOfFile((void*)((char*)buffer + sz));
+			UnmapViewOfFile((void*)((char*)buffer + raw_total_size));
 #endif
 		}
 	}
@@ -535,7 +548,7 @@ void SharedRingBuffer::wait_tail(unsigned int timeoutUs)
 
 void SharedRingBuffer::wait_tail(const boost::posix_time::ptime& abs_timeout) {
 	assert(ctrl != NULL);
-	boost::posix_time::ptime t = boost::get_system_time();
+	//boost::posix_time::ptime t = boost::get_system_time();
 	boost::interprocess::scoped_lock<interprocess_mutex> lock(ctrl->header_mutex, abs_timeout);
 	// Wait only if the buffer is empty - use correct tail based on mode
 	bool is_empty = (ctrl->mode == ManyToOne) ? (ctrl->tail == ctrl->head) : (tail == ctrl->head);
@@ -552,7 +565,7 @@ void SharedRingBuffer::wait_head(unsigned int timeoutUs)
 void SharedRingBuffer::wait_head(const boost::posix_time::ptime &abs_timeout)
 {
 	assert(ctrl != NULL);
-	boost::posix_time::ptime t = boost::get_system_time();
+	//boost::posix_time::ptime t = boost::get_system_time();
 	boost::interprocess::scoped_lock<interprocess_mutex> lock(ctrl->header_mutex, abs_timeout);
 	if (tail == ctrl->head) // Wait only if the buffer is empty
 		ctrl->cond_head.timed_wait(lock, abs_timeout);
@@ -591,9 +604,6 @@ void SharedRingBuffer::print(std::ostream& stream) const {
 	stream << endl;
 }
 
-// Note: createTimestampBuffer() and openTimestampBuffer() are no longer needed
-// Timestamp buffer is now created/opened automatically with the data buffer in the same SHM
-
 void SharedRingBuffer::writeTimestampEntry(
 	SharedRingBuffer::timestamp_t timestamp_ns,
 	size_t data_position, size_t sample_count)
@@ -608,7 +618,6 @@ void SharedRingBuffer::writeTimestampEntry(
 	entry.timestamp_ns = static_cast<uint64_t>(timestamp_ns);
 	entry.data_position = data_position;
 	entry.sample_count = static_cast<uint32_t>(sample_count);
-	entry.reserved = 0;
 
 	// Write entry at current head position using stored pointer
 	ts_entries[ctrl->ts_head] = entry;
